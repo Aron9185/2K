@@ -183,6 +183,19 @@ NBA_PLAYER_SUBCATEGORY_IDS = {
     "alternate_total": 13201,
 }
 
+NBA_DRAFT_EVENT_ID = "2072dbf6-36da-4ec3-d6e4-08ddc87a28a4"
+NBA_DRAFT_EVENT_SUBCATEGORY_IDS = {
+    "picks_1_5": 20006,
+    "top_5_pick": 19866,
+    "picks_6_10": 20007,
+    "top_10_pick": 19867,
+    "picks_11_20": 20014,
+    "picks_21_30": 20015,
+    "player_draft_position": 18092,
+    "first_round": 18093,
+    "h2h_matchups": 18094,
+}
+
 GAME_LINE_MARKET_TYPES = {
     "both_teams_score",
     "double_chance",
@@ -609,6 +622,274 @@ def _selection_outcomes_json(selections: list[dict[str, Any]]) -> str:
             }
         )
     return json.dumps(outcomes, separators=(",", ":"), ensure_ascii=True) if outcomes else ""
+
+
+def _selection_line(selection: dict[str, Any]) -> float | None:
+    line = _selection_points(selection)
+    if line is not None:
+        return line
+    match = re.search(r"\b([0-9]+(?:\.[0-9]+)?)\b", _selection_label(selection))
+    if not match:
+        return None
+    return _parse_line(match.group(1))
+
+
+def _nba_draft_pick_number(market_name: str, market_type_name: str) -> int | None:
+    text = normalize_text(f"{market_name} {market_type_name}")
+    patterns = (
+        r"\bnumber\s+([0-9]{1,2})\s+pick\b",
+        r"\bpick\s+([0-9]{1,2})\b",
+        r"\b([0-9]{1,2})(?:st|nd|rd|th)?\s+(?:overall\s+)?pick\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        value = int(match.group(1))
+        if 1 <= value <= 60:
+            return value
+    return None
+
+
+def _nba_draft_top_pick_number(market_name: str, market_type_name: str) -> int | None:
+    text = normalize_text(f"{market_name} {market_type_name}")
+    match = re.search(r"\btop\s+([0-9]{1,2})\b", text)
+    if not match:
+        return None
+    value = int(match.group(1))
+    if value <= 0:
+        return None
+    return value
+
+
+def _nba_draft_player_from_position_market(market_name: str) -> str:
+    return re.sub(r"\s+draft\s+position\b.*$", "", str(market_name or "").strip(), flags=re.IGNORECASE).strip()
+
+
+def _nba_draft_market_text(market_name: str, market_type_name: str) -> str:
+    return normalize_text(f"{market_name} {market_type_name}")
+
+
+def _is_nba_draft_market(event_id: str, market_name: str, market_type_name: str) -> bool:
+    if str(event_id or "").strip() == NBA_DRAFT_EVENT_ID:
+        return True
+    text = _nba_draft_market_text(market_name, market_type_name)
+    return "draft" in text and any(
+        token in text
+        for token in (
+            "pick",
+            "draft position",
+            "drafted round",
+            "1st round",
+            "first round",
+            "to be drafted",
+        )
+    )
+
+
+def _nba_draft_base_market_row(
+    *,
+    event_id: str,
+    market_id: str,
+    market_name: str,
+    market_type: str,
+    stat: str,
+    line: Any,
+    player_name: str,
+    home_team: str,
+    away_team: str,
+    over_odds: Any,
+    under_odds: Any,
+    extra_outcomes: str,
+    updated_at: str,
+    event_date: str,
+    question: str,
+) -> dict[str, Any]:
+    return {
+        "provider": "draftkings",
+        "provider_event_id": event_id,
+        "provider_market_id": market_id,
+        "provider_league": "nba",
+        "provider_market_name": market_name,
+        "book": "draftkings",
+        "sport": "nba",
+        "market_type": market_type,
+        "stat": stat,
+        "player_name": player_name,
+        "line": line,
+        "home_team": home_team,
+        "away_team": away_team,
+        "over_odds": over_odds,
+        "under_odds": under_odds,
+        "extra_outcomes": extra_outcomes,
+        "updated_at": updated_at,
+        "period": "",
+        "event_date": event_date,
+        "question": question,
+    }
+
+
+def _parse_nba_draft_controldata_market(
+    *,
+    event_id: str,
+    market_id: str,
+    market_name: str,
+    market_type_name: str,
+    selections: list[dict[str, Any]],
+    home_team: str,
+    away_team: str,
+    updated_at: str,
+    event_date: str,
+) -> list[dict[str, Any]]:
+    if not _is_nba_draft_market(event_id, market_name, market_type_name):
+        return []
+    priced = [selection for selection in selections if _selection_display_odds(selection) is not None]
+    if not priced:
+        return []
+
+    pick_number = _nba_draft_pick_number(market_name, market_type_name)
+    if pick_number is not None:
+        return [
+            _nba_draft_base_market_row(
+                event_id=event_id,
+                market_id=market_id,
+                market_name=market_name,
+                market_type="nba_draft_future",
+                stat=f"pick{pick_number}",
+                line=pick_number,
+                player_name="",
+                home_team=home_team,
+                away_team=away_team,
+                over_odds=_selection_display_odds(priced[0]),
+                under_odds=_selection_display_odds(priced[1]) if len(priced) > 1 else "",
+                extra_outcomes=_selection_outcomes_json(priced),
+                updated_at=updated_at,
+                event_date=event_date,
+                question=market_name,
+            )
+        ]
+
+    top_pick_number = _nba_draft_top_pick_number(market_name, market_type_name)
+    if top_pick_number is not None:
+        return [
+            _nba_draft_base_market_row(
+                event_id=event_id,
+                market_id=market_id,
+                market_name=market_name,
+                market_type="nba_draft_future",
+                stat=f"top{top_pick_number}",
+                line=top_pick_number,
+                player_name="",
+                home_team=home_team,
+                away_team=away_team,
+                over_odds=_selection_display_odds(priced[0]),
+                under_odds=_selection_display_odds(priced[1]) if len(priced) > 1 else "",
+                extra_outcomes=_selection_outcomes_json(priced),
+                updated_at=updated_at,
+                event_date=event_date,
+                question=market_name,
+            )
+        ]
+
+    text = _nba_draft_market_text(market_name, market_type_name)
+    if "draft position" in text:
+        grouped: dict[float, dict[str, dict[str, Any]]] = {}
+        for selection in priced:
+            label = _selection_label(selection).lower()
+            outcome_type = str(selection.get("outcomeType") or "").strip().lower()
+            side = outcome_type or ("over" if label.startswith("over") else "under" if label.startswith("under") else "")
+            line = _selection_line(selection)
+            if side not in {"over", "under"} or line is None:
+                continue
+            grouped.setdefault(line, {})[side] = selection
+
+        player_name = _nba_draft_player_from_position_market(market_name)
+        rows: list[dict[str, Any]] = []
+        for line, by_side in grouped.items():
+            over = by_side.get("over")
+            under = by_side.get("under")
+            if not over or not under:
+                continue
+            rows.append(
+                _nba_draft_base_market_row(
+                    event_id=event_id,
+                    market_id=f"{market_id}:{line:g}",
+                    market_name=market_name,
+                    market_type="nba_draft_position",
+                    stat="draftposition",
+                    line=line,
+                    player_name=player_name,
+                    home_team=home_team,
+                    away_team=away_team,
+                    over_odds=_selection_display_odds(over),
+                    under_odds=_selection_display_odds(under),
+                    extra_outcomes=_selection_outcomes_json([over, under]),
+                    updated_at=updated_at,
+                    event_date=event_date,
+                    question=market_name,
+                )
+            )
+        return rows
+
+    if "drafted round 1" in text or "1st round" in text or "first round" in text:
+        rows = []
+        for selection in priced:
+            yes_odds = _selection_display_odds(selection)
+            player_name = _selection_player_name(selection) or _selection_label(selection)
+            if yes_odds is None or not player_name:
+                continue
+            no_odds = _synthetic_under_odds(yes_odds)
+            extra_outcomes = json.dumps(
+                [
+                    {"key": "yes", "label": "Yes", "odds": yes_odds},
+                    {"key": "no", "label": "No", "odds": no_odds},
+                ],
+                separators=(",", ":"),
+                ensure_ascii=True,
+            )
+            rows.append(
+                _nba_draft_base_market_row(
+                    event_id=event_id,
+                    market_id=f"{market_id}:{selection.get('id') or player_name}",
+                    market_name=market_name,
+                    market_type="nba_draft_binary",
+                    stat="firstround",
+                    line=30.5,
+                    player_name=player_name,
+                    home_team=home_team,
+                    away_team=away_team,
+                    over_odds=yes_odds,
+                    under_odds=no_odds,
+                    extra_outcomes=extra_outcomes,
+                    updated_at=updated_at,
+                    event_date=event_date,
+                    question=market_name,
+                )
+            )
+        return rows
+
+    if "1st to be drafted" in text or "first to be drafted" in text:
+        return [
+            _nba_draft_base_market_row(
+                event_id=event_id,
+                market_id=market_id,
+                market_name=market_name,
+                market_type="nba_draft_h2h",
+                stat="firstdrafted",
+                line="",
+                player_name="",
+                home_team=home_team,
+                away_team=away_team,
+                over_odds=_selection_display_odds(priced[0]),
+                under_odds=_selection_display_odds(priced[1]) if len(priced) > 1 else "",
+                extra_outcomes=_selection_outcomes_json(priced),
+                updated_at=updated_at,
+                event_date=event_date,
+                question=market_name,
+            )
+        ]
+
+    return []
 
 
 def _ufc_method_key(value: str) -> str:
@@ -1218,6 +1499,22 @@ def _parse_controldata_payload(
         market_type_name = str(((market.get("marketType") or {}).get("name") or "")).strip()
         period = _infer_period(market_name or market_type_name)
         labels = {(_selection_label(selection).lower()) for selection in selections}
+
+        if sport == "nba":
+            nba_draft_rows = _parse_nba_draft_controldata_market(
+                event_id=event_id,
+                market_id=market_id,
+                market_name=market_name,
+                market_type_name=market_type_name,
+                selections=selections,
+                home_team=home_team,
+                away_team=away_team,
+                updated_at=updated_at,
+                event_date=event.get("startEventDate") or "",
+            )
+            if nba_draft_rows:
+                rows.extend(nba_draft_rows)
+                continue
 
         if sport == "golf":
             market_text = f"{market_name} {market_type_name}".lower()
@@ -1934,7 +2231,17 @@ def _missing_event_subcategory_payloads(sport: str, payload: Any) -> bool:
             for key in event_subcategories
             if ":" in str(key)
         }
-        return bool(set(NBA_PLAYER_SUBCATEGORY_IDS) - found_keys)
+        if set(NBA_PLAYER_SUBCATEGORY_IDS) - found_keys:
+            return True
+        draft_subcategories = payload.get("nba_draft_event_subcategories")
+        if not isinstance(draft_subcategories, dict) or not draft_subcategories:
+            return True
+        draft_found_keys = {
+            str(key).split(":", 1)[1]
+            for key in draft_subcategories
+            if ":" in str(key)
+        }
+        return bool(set(NBA_DRAFT_EVENT_SUBCATEGORY_IDS) - draft_found_keys)
     if sport == "wnba":
         event_subcategories = payload.get("event_subcategories")
         return not isinstance(event_subcategories, dict) or not event_subcategories
@@ -2159,6 +2466,27 @@ def _fetch_live_nash_sport_payloads(
                 quarter_spread_payloads[f"{event_id}:{key}"] = payload
                 all_rows.extend(parse_payload(payload, sport, event_lookup=merged_event_map))
         raw_payloads["first_quarter_spread_by_event"] = quarter_spread_payloads
+
+        draft_payloads: dict[str, Any] = {}
+        for key, subcategory_id in _event_subcategory_items_for_scope(
+            sport,
+            NBA_DRAFT_EVENT_SUBCATEGORY_IDS,
+            market_scope,
+        ):
+            payload_key = f"{NBA_DRAFT_EVENT_ID}:{key}"
+            try:
+                payload = get_browser_like_json(
+                    _event_subcategory_url(NBA_DRAFT_EVENT_ID, subcategory_id),
+                    headers=_nash_headers(feature="eventSubcategory", page="event"),
+                    proxy_url=proxy_url,
+                    impersonate=impersonate,
+                )
+            except Exception as exc:
+                draft_payloads[payload_key] = {"error": str(exc)}
+                continue
+            draft_payloads[payload_key] = payload
+            all_rows.extend(parse_payload(payload, sport, event_lookup=merged_event_map))
+        raw_payloads["nba_draft_event_subcategories"] = draft_payloads
     elif sport == "wnba":
         merged_event_map = dict(primary_event_map)
         league_subcategory_payloads: dict[str, Any] = {}
@@ -2403,6 +2731,13 @@ def fetch_rows(
                     )
                 )
             for event_payload in (payload.get("first_quarter_spread_by_event") or {}).values():
+                all_rows.extend(
+                    _filter_rows_by_market_scope(
+                        parse_payload(event_payload, sport, event_lookup=merged_event_map),
+                        market_scope,
+                    )
+                )
+            for event_payload in (payload.get("nba_draft_event_subcategories") or {}).values():
                 all_rows.extend(
                     _filter_rows_by_market_scope(
                         parse_payload(event_payload, sport, event_lookup=merged_event_map),

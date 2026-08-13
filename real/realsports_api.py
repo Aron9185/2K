@@ -22,9 +22,9 @@ except ImportError as exc:  # pragma: no cover - import error is environment-spe
 
 
 BASE_DIR = Path(__file__).resolve().parent
-BASE_URL = "https://web.realsports.io"
-DEFAULT_ORIGIN = "https://www.realsports.io"
-DEFAULT_REFERER = "https://www.realsports.io/"
+BASE_URL = "https://web.realapp.com"
+DEFAULT_ORIGIN = "https://web.realapp.com"
+DEFAULT_REFERER = "https://web.realapp.com/"
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -35,6 +35,7 @@ DEFAULT_DEVICE_TYPE = "desktop_web"
 DEFAULT_REAL_VERSION = "23"
 DEFAULT_AUTH_CACHE_PATH = BASE_DIR / ".realsports_auth_cache.json"
 DEFAULT_BROWSER_SESSION_PATH = BASE_DIR / ".realsports_browser_session.json"
+DEFAULT_ENV_SESSION_PATH = BASE_DIR / ".realsports_env.ps1"
 AUTH_CACHE_TTL_SECONDS = 12 * 60 * 60
 REQUEST_HASH = Hashids(salt="realwebapp", min_length=16)
 DEFAULT_BROWSER_LEVELDB_GLOBS = (
@@ -131,7 +132,15 @@ class RealSportsClient:
             "REALSPORTS_BROWSER_SESSION",
             str(DEFAULT_BROWSER_SESSION_PATH),
         )
-        browser_session = cls._load_browser_session(Path(browser_session_path))
+        browser_session = {}
+        if not seed_auth_raw:
+            env_session_path = os.environ.get(
+                "REALSPORTS_ENV_SESSION",
+                str(DEFAULT_ENV_SESSION_PATH),
+            )
+            browser_session = cls._load_env_session(Path(env_session_path))
+        if not browser_session:
+            browser_session = cls._load_browser_session(Path(browser_session_path))
         if not browser_session:
             browser_session = cls._extract_browser_session_from_local_storage()
             if browser_session:
@@ -142,6 +151,14 @@ class RealSportsClient:
         return cls(
             login=os.environ.get("REALSPORTS_LOGIN", ""),
             password=os.environ.get("REALSPORTS_PASSWORD", ""),
+            origin=os.environ.get(
+                "REALSPORTS_ORIGIN",
+                browser_session.get("origin") or DEFAULT_ORIGIN,
+            ),
+            referer=os.environ.get(
+                "REALSPORTS_REFERER",
+                browser_session.get("referer") or DEFAULT_REFERER,
+            ),
             user_agent=os.environ.get(
                 "REALSPORTS_USER_AGENT",
                 browser_session.get("user_agent") or DEFAULT_USER_AGENT,
@@ -194,6 +211,18 @@ class RealSportsClient:
                 self._save_browser_session(self.browser_session_path, browser_session)
         return self._apply_browser_session(browser_session)
 
+    def _load_available_session(self, *, refresh_from_storage: bool = False) -> RealSportsAuthInfo | None:
+        env_session_path = Path(
+            os.environ.get(
+                "REALSPORTS_ENV_SESSION",
+                str(DEFAULT_ENV_SESSION_PATH),
+            )
+        )
+        env_session = self._load_env_session(env_session_path)
+        if env_session:
+            return self._apply_browser_session(env_session)
+        return self._load_or_refresh_browser_session(refresh_from_storage=refresh_from_storage)
+
     @staticmethod
     def _load_browser_session(path: Path) -> dict[str, str]:
         if not path.exists():
@@ -205,6 +234,46 @@ class RealSportsClient:
         if not isinstance(payload, dict):
             return {}
         return {str(key): str(value) for key, value in payload.items() if value is not None}
+
+    @staticmethod
+    def _load_env_session(path: Path) -> dict[str, str]:
+        if not path.exists():
+            return {}
+        env_keys = {
+            "REALSPORTS_AUTH_INFO": "real_auth_info",
+            "REALSPORTS_DEVICE_UUID": "device_uuid",
+            "REALSPORTS_DEVICE_TYPE": "device_type",
+            "REALSPORTS_REAL_VERSION": "real_version",
+            "REALSPORTS_USER_AGENT": "user_agent",
+            "REALSPORTS_DEVICE_NAME": "device_name",
+            "REALSPORTS_ORIGIN": "origin",
+            "REALSPORTS_REFERER": "referer",
+        }
+        session: dict[str, str] = {}
+        try:
+            lines = path.read_text(encoding="utf8").splitlines()
+        except OSError:
+            return {}
+        for line in lines:
+            line = line.strip()
+            if not line.lower().startswith("$env:") or "=" not in line:
+                continue
+            name_part, value_part = line.split("=", 1)
+            env_name = name_part.split(":", 1)[-1].strip().upper()
+            key = env_keys.get(env_name)
+            if not key:
+                continue
+            value = value_part.strip()
+            if len(value) >= 2 and value[0] == "'" and value[-1] == "'":
+                value = value[1:-1].replace("''", "'")
+            elif len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+                value = value[1:-1]
+            if value:
+                session[key] = value
+        if session.get("real_auth_info"):
+            session["source"] = str(path)
+            return session
+        return {}
 
     @staticmethod
     def _save_browser_session(path: Path, payload: Mapping[str, Any]) -> None:
@@ -438,7 +507,7 @@ class RealSportsClient:
                 self.auth_error = None
                 self.auth_info = cached_auth
                 return cached_auth
-            browser_auth = self._load_or_refresh_browser_session()
+            browser_auth = self._load_available_session()
             if browser_auth is not None:
                 self._save_cached_auth(browser_auth)
                 return browser_auth
@@ -528,7 +597,7 @@ class RealSportsClient:
                 self.auth_info = None
                 self.auth_error = None
                 self._clear_cached_auth()
-                self._load_or_refresh_browser_session(refresh_from_storage=True)
+                self._load_available_session(refresh_from_storage=True)
                 return self.request(
                     method,
                     path_or_url,

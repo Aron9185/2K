@@ -374,6 +374,20 @@ def _soccer_tournament_future_stat(market_name: str, market_type_name: str) -> s
         name_norm,
     ):
         return "winner"
+    if type_key in {"TO_REACH_THE_FINAL", "TO_REACH_THE_FINAL_SGX"} or "to reach the final" in name_norm:
+        return "reach_final"
+    if type_key in {"TO_REACH_SEMI_FINALS", "TO_REACH_SEMI_FINALS_SGX"} or re.search(
+        r"\bto reach (?:the )?semi(?: |-)?finals?\b",
+        name_norm,
+    ):
+        return "reach_semifinals"
+    if type_key in {"TO_REACH_QUARTER_FINALS", "TO_REACH_QUARTER_FINALS_SGX"} or re.search(
+        r"\bto reach (?:the )?quarter(?: |-)?finals?\b",
+        name_norm,
+    ):
+        return "reach_quarterfinals"
+    if type_key in {"TO_REACH_ROUND_OF_16", "TO_REACH_ROUND_OF_16_SGX"} or "to reach round of 16" in name_norm:
+        return "reach_roundof16"
     if type_key in {"GOLDEN_BOOT", "TOP_GOALSCORER_SGX"} or name_compact in {
         "fifagoldenbootwinner",
         "topgoalscorer",
@@ -388,6 +402,27 @@ def _soccer_tournament_future_stat(market_name: str, market_type_name: str) -> s
     if type_key == "TOURNAMENT_MOST_ASSISTS" or "assist the most goals" in name_norm:
         return "mostassists"
     return ""
+
+
+def _nba_draft_future_stat(market_name: str, market_type_name: str) -> str:
+    type_key = str(market_type_name or "").strip().upper()
+    name_norm = normalize_text(market_name)
+    if type_key == "NUMBER_1_OVERALL_PICK" or "number 1 overall pick" in name_norm:
+        return "pick1"
+    if "draft" not in name_norm and "pick" not in name_norm and "DRAFT" not in type_key:
+        return ""
+    if "player draft position" in name_norm or type_key == "PLAYER_DRAFT_POSITION":
+        return "draftposition"
+    if "top x pick" in name_norm or type_key in {"TOP_X_PICK", "TOP_PICK"}:
+        return "topxpick"
+    pick_match = re.search(r"\bpick\s+([0-9]+)\b", name_norm)
+    if not pick_match:
+        pick_match = re.search(r"\b([0-9]+)(?:st|nd|rd|th)?\s+pick\b", name_norm)
+    if pick_match:
+        return f"pick{int(pick_match.group(1))}"
+    if "exacta" in name_norm:
+        return "exacta"
+    return "draft"
 
 
 def _clean_team_name(value: str) -> str:
@@ -1338,6 +1373,43 @@ def parse_payload(payload: dict[str, Any], sport: str) -> list[dict[str, Any]]:
                             "book": "fanduel",
                             "sport": sport,
                             "market_type": "tournament_future",
+                            "stat": future_stat,
+                            "player_name": "",
+                            "line": "",
+                            "home_team": "",
+                            "away_team": "",
+                            "over_odds": _runner_odds(priced_runners[0]) if priced_runners else "",
+                            "under_odds": _runner_odds(priced_runners[1]) if len(priced_runners) > 1 else "",
+                            "extra_outcomes": extra_outcomes,
+                            "updated_at": updated_at,
+                            "period": "",
+                            "event_date": event_date,
+                            "question": market_name,
+                        }
+                    )
+                    continue
+
+        if sport == "nba":
+            future_stat = _nba_draft_future_stat(market_name, market_type_name)
+            if future_stat:
+                priced_runners = [
+                    runner
+                    for runner in runner_rows
+                    if str(runner.get("runnerStatus") or "").upper() not in {"REMOVED", "SUSPENDED"}
+                    and _runner_odds(runner) is not None
+                ]
+                extra_outcomes = _runner_outcomes_json(priced_runners)
+                if extra_outcomes:
+                    rows.append(
+                        {
+                            "provider": "fanduel",
+                            "provider_event_id": event_id,
+                            "provider_market_id": market_id,
+                            "provider_league": sport,
+                            "provider_market_name": market_name,
+                            "book": "fanduel",
+                            "sport": sport,
+                            "market_type": "nba_draft_future",
                             "stat": future_stat,
                             "player_name": "",
                             "line": "",

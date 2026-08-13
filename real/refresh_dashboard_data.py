@@ -94,6 +94,11 @@ def parse_args() -> argparse.Namespace:
         help="Season value passed through to lineup.py.",
     )
     parser.add_argument(
+        "--day",
+        default="",
+        help="Optional Real feed day to render, for example 2026-06-28. Defaults to the active day.",
+    )
+    parser.add_argument(
         "--dashboard-dir",
         default=str(OUTPUT_DIR),
         help="Stable dashboard markdown output directory.",
@@ -343,7 +348,7 @@ def _render_live_prediction_sheet(
         "",
         prediction_summary_line(market_rows, position_rows),
         "",
-        "`Selection+Rax` is the side plus the recommended buy size, for example `DET10000` or `YRFI10000`. A `0` means pass at the current Real price.",
+        "`Selection+Karma` is the side plus the recommended buy size, for example `DET10000` or `YRFI10000`. A `0` means pass at the current Real price.",
         "`Action` in the open positions table is the current hold-vs-cashout recommendation.",
         "",
     ]
@@ -397,7 +402,17 @@ def _refresh_core_markets(
         command.extend(["--dump-json-dir", str(BASE_DIR / "tmp" / dump_name)])
     if scope_key != "all":
         command.extend(["--market-scope", scope_key])
-    _run_step(command)
+    if _try_run_step(command):
+        return
+    if markets_csv.exists():
+        print(
+            f"Warning: sportsbook market refresh failed; continuing with existing {markets_csv}.",
+            flush=True,
+        )
+        return
+    raise RuntimeError(
+        "Sportsbook market refresh failed and no existing market CSV is available."
+    )
 
 
 def _game_team_value(game: dict[str, object], side: str) -> str:
@@ -631,25 +646,27 @@ def _refresh_sport(
     sport: str,
     *,
     season: str,
+    requested_day: str = "",
     dashboard_dir: Path,
     markets_csv: Path,
 ) -> None:
     recommendation_csv = BASE_DIR / f"poll_vote_recommendations_consensus_{sport}.csv"
     label = _sport_label(sport)
     print(f"Refreshing {label} vote recommendations.", flush=True)
-    _run_step(
-        [
-            sys.executable,
-            "-B",
-            str(BASE_DIR / "recommend_game_feed_polls.py"),
-            "--sport",
-            sport,
-            "--markets-csv",
-            str(markets_csv),
-            "--output",
-            str(recommendation_csv),
-        ]
-    )
+    recommendation_command = [
+        sys.executable,
+        "-B",
+        str(BASE_DIR / "recommend_game_feed_polls.py"),
+        "--sport",
+        sport,
+        "--markets-csv",
+        str(markets_csv),
+        "--output",
+        str(recommendation_csv),
+    ]
+    if requested_day:
+        recommendation_command.extend(["--day", requested_day])
+    _run_step(recommendation_command)
 
     first_row = _first_csv_row(recommendation_csv)
     day_value = str((first_row or {}).get("day") or "").strip()
@@ -1033,6 +1050,7 @@ def main() -> int:
         _refresh_sport(
             sport,
             season=str(args.season),
+            requested_day=str(args.day or ""),
             dashboard_dir=dashboard_dir,
             markets_csv=markets_csv,
         )
@@ -1041,6 +1059,7 @@ def main() -> int:
         _refresh_sport(
             "soccer",
             season=str(args.season),
+            requested_day=str(args.day or ""),
             dashboard_dir=dashboard_dir,
             markets_csv=soccer_markets_csv,
         )
@@ -1049,6 +1068,7 @@ def main() -> int:
         _refresh_sport(
             "golf",
             season=str(args.season),
+            requested_day=str(args.day or ""),
             dashboard_dir=dashboard_dir,
             markets_csv=golf_markets_csv,
         )
@@ -1056,6 +1076,7 @@ def main() -> int:
         _refresh_sport(
             "ufc",
             season=str(args.season),
+            requested_day=str(args.day or ""),
             dashboard_dir=dashboard_dir,
             markets_csv=ufc_markets_csv,
         )
@@ -1063,6 +1084,7 @@ def main() -> int:
         _refresh_sport(
             "ncaabb",
             season=str(args.season),
+            requested_day=str(args.day or ""),
             dashboard_dir=dashboard_dir,
             markets_csv=cws_markets_csv,
         )

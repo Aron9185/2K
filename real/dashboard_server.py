@@ -30,7 +30,7 @@ LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 ACTION_TOKEN_RE = re.compile(r"\s*<!--REAL_ACTIONS:([A-Za-z0-9_\-=]+)-->\s*$")
 SOURCE_LINES_TOKEN_RE = re.compile(r"\s*<!--REAL_SOURCE_LINES:([A-Za-z0-9_\-=]+)-->\s*$")
 ROW_META_TOKEN_RE = re.compile(r"\s*<!--REAL_ROW:([A-Za-z0-9_\-=]+)-->\s*$")
-DEFAULT_REAL_COMMENT_GROUP_ID = 33162
+DEFAULT_REAL_COMMENT_GROUP_ID = 777777777
 DOC_SPECS = [
     {
         "id": "mlb-vote",
@@ -498,10 +498,10 @@ def _compact_action_ev_label(ev_text: str) -> str:
         sign, number_text = percent_match.groups()
         return f"{sign}{_compact_decimal_label(number_text)}%"
 
-    rax_match = re.fullmatch(r"([+-]?)(\d+(?:\.\d+)?)(\s+Rax)", text)
-    if rax_match:
-        sign, number_text, suffix = rax_match.groups()
-        return f"{sign}{_compact_decimal_label(number_text)}{suffix}"
+    currency_match = re.fullmatch(r"([+-]?)(\d+(?:\.\d+)?)(\s+(?:Rax|karma))", text, re.IGNORECASE)
+    if currency_match:
+        sign, number_text, _suffix = currency_match.groups()
+        return f"{sign}{_compact_decimal_label(number_text)} karma"
 
     return text
 
@@ -589,6 +589,13 @@ def _render_table(
         if poll_index is not None and poll_index < len(row):
             visible_poll, row_meta = _decode_row_meta(row[poll_index])
             row[poll_index] = visible_poll
+        if not row_meta:
+            for cell_index, cell in enumerate(row):
+                visible_cell, cell_meta = _decode_row_meta(cell)
+                if cell_meta:
+                    row[cell_index] = visible_cell
+                    row_meta = cell_meta
+                    break
         if (
             not row_meta
             and is_poll_pick_table
@@ -1678,20 +1685,85 @@ def _html_shell() -> str:
           header: row.dataset.header || "",
           gameId: row.dataset.gameId || "",
           gameLabel: row.dataset.gameLabel || "",
+          contentText: row.dataset.contentText || "",
         });
       }
       return targets;
     }
 
-    function chooseLineupPostTarget(container) {
-      const targets = collectPostTargetsInContainer(container);
-      const dailyTarget = targets.find((target) => {
-        const header = String(target.header || "").trim().toLowerCase();
-        const gameId = String(target.gameId || "");
-        return header === "daily stats" || gameId.startsWith("daily:");
-      });
-      if (dailyTarget) return dailyTarget;
-      return choosePostTarget(targets);
+    function isLineupPostTarget(target) {
+      const pollKind = String(target.pollKind || "").trim().toLowerCase();
+      const header = String(target.header || "").trim().toLowerCase();
+      const gameId = String(target.gameId || "").trim().toLowerCase();
+      const gameLabel = String(target.gameLabel || "").trim().toLowerCase();
+      const contentText = String(target.contentText || "").trim().toLowerCase();
+      return (
+        pollKind === "contest" ||
+        pollKind === "playerratingcontest" ||
+        gameId.startsWith("contest:") ||
+        header.includes("lineup") ||
+        gameLabel.includes("lineup") ||
+        contentText.includes("lineup")
+      );
+    }
+
+    function lineupPostTargetPriority(target) {
+      const gameId = String(target.gameId || "").trim().toLowerCase();
+      const gameLabel = String(target.gameLabel || "").trim().toLowerCase();
+      const contentText = String(target.contentText || "").trim().toLowerCase();
+      if (contentText.includes("draft your sport lineup")) return 0;
+      if (gameLabel === "lineup" || gameLabel === "contest") return 1;
+      if (gameId.startsWith("contest:")) return 2;
+      if (contentText.includes("draft your game lineup")) return 10;
+      return 50;
+    }
+
+    function chooseBestLineupPostTarget(targets) {
+      return targets
+        .filter(isLineupPostTarget)
+        .slice()
+        .sort((a, b) => lineupPostTargetPriority(a) - lineupPostTargetPriority(b))[0] || null;
+    }
+
+    function isLineupContestHeadingText(headingText) {
+      return (
+        headingText === "daily draft lineup contests" ||
+        headingText === "group stage draft lineup" ||
+        headingText === "knockout round draft lineup" ||
+        headingText === "lineup contests" ||
+        headingText === "lineup contest picks"
+      );
+    }
+
+    function collectSectionPostTargets(heading) {
+      const targets = [];
+      let node = heading ? heading.nextElementSibling : null;
+      while (node && node.tagName !== "H2") {
+        targets.push(...collectPostTargetsInContainer(node));
+        node = node.nextElementSibling;
+      }
+      return targets;
+    }
+
+    function chooseLineupPostTarget(container, heading) {
+      const targets = [];
+      let sectionNode = heading ? heading.nextElementSibling : null;
+      while (sectionNode && sectionNode.tagName !== "H2") {
+        targets.push(...collectPostTargetsInContainer(sectionNode));
+        sectionNode = sectionNode.nextElementSibling;
+      }
+      let node = heading ? heading.nextElementSibling : null;
+      while (node) {
+        if (node.tagName === "H2") {
+          const headingText = (node.textContent || "").trim().toLowerCase();
+          if (isLineupContestHeadingText(headingText)) {
+            targets.push(...collectSectionPostTargets(node));
+          }
+        }
+        node = node.nextElementSibling;
+      }
+      targets.push(...collectPostTargetsInContainer(container));
+      return chooseBestLineupPostTarget(targets);
     }
 
     function isDailyLineupHeading(headingText) {
@@ -1779,6 +1851,21 @@ def _html_shell() -> str:
       }
     }
 
+    function postErrorMessage(error) {
+      return String(error && error.message ? error.message : error || "Post failed")
+        .replace(/\\s+/g, " ")
+        .trim() || "Post failed";
+    }
+
+    function postErrorLabel(message) {
+      const lower = String(message || "").toLowerCase();
+      if (lower.includes("extra verification")) return "Verification required";
+      if (lower.includes("authentication") || lower.includes("401")) return "Auth expired";
+      if (lower.includes("post_id") || lower.includes("post id")) return "No post id";
+      if (lower.includes("group")) return "Group error";
+      return "Post failed";
+    }
+
     function attachHeadingTextPostButton(row, label, title, buildPost, confirmText) {
       const button = document.createElement("button");
       button.type = "button";
@@ -1812,8 +1899,19 @@ def _html_shell() -> str:
           });
           setPostButtonState(button, "Posted", "posted", false);
         } catch (error) {
-          setPostButtonState(button, "Post failed", "failed", false);
-          button.title = String(error && error.message ? error.message : error);
+          const message = postErrorMessage(error);
+          setPostButtonState(button, postErrorLabel(message), "failed", false);
+          button.title = message;
+          if (message.toLowerCase().includes("extra verification")) {
+            try {
+              await copyText(text);
+              window.alert(`Real post failed: ${message}\n\nI copied the comment text so you can paste it in the Real app after completing the verification prompt.`);
+            } catch (copyError) {
+              window.alert(`Real post failed: ${message}\n\nUse the Copy button and paste the comment in the Real app after completing the verification prompt.`);
+            }
+          } else {
+            window.alert(`Real post failed: ${message}`);
+          }
         }
       });
       row.appendChild(button);
@@ -1898,19 +1996,37 @@ def _html_shell() -> str:
             "Post Daily Lineup player names in rank order",
             () => ({
               text: collectDailyLineupNames(table),
-              target: chooseLineupPostTarget(container),
+              target: chooseLineupPostTarget(container, heading),
             }),
             "these lineup names"
           );
-        } else if (headingText === "group stage draft lineup") {
+        } else if (
+          headingText === "group stage draft lineup" ||
+          headingText === "knockout round draft lineup"
+        ) {
           const table = findLineupContestTable(heading);
           if (!table) continue;
-          attachHeadingCopyButton(
+          const isKnockout = headingText === "knockout round draft lineup";
+          const row = attachHeadingCopyButton(
             heading,
             "game-copy-row daily-lineup-copy-row",
-            "Copy Group Stage Lineup",
-            "Copy the World Cup group-stage draft player names",
+            isKnockout ? "Copy Knockout Lineup" : "Copy Group Stage Lineup",
+            isKnockout
+              ? "Copy the World Cup knockout-round draft player names"
+              : "Copy the World Cup group-stage draft player names",
             () => collectLineupContestText(table)
+          );
+          attachHeadingTextPostButton(
+            row,
+            "Post Names",
+            isKnockout
+              ? "Post World Cup knockout-round draft player names in rank order"
+              : "Post World Cup group-stage draft player names in rank order",
+            () => ({
+              text: collectLineupContestText(table),
+              target: collectPostTargetsInContainer(table).find(isLineupPostTarget),
+            }),
+            "these lineup names"
           );
         } else if (
           headingText === "daily draft lineup contests" ||
@@ -1919,12 +2035,22 @@ def _html_shell() -> str:
         ) {
           const table = findLineupContestTable(heading);
           if (!table) continue;
-          attachHeadingCopyButton(
+          const row = attachHeadingCopyButton(
             heading,
             "game-copy-row daily-lineup-copy-row",
             "Copy Lineups",
             "Copy lineup contest player names",
             () => collectLineupContestText(table)
+          );
+          attachHeadingTextPostButton(
+            row,
+            "Post Lineups",
+            "Post lineup contest player names in rank order",
+            () => ({
+              text: collectLineupContestText(table),
+              target: chooseBestLineupPostTarget(collectPostTargetsInContainer(table)),
+            }),
+            "these lineup contest names"
           );
         }
       }

@@ -106,14 +106,14 @@ def _format_signed_probability_delta(value: str) -> str:
     return f"{number * 100.0:+.2f}%"
 
 
-def _format_signed_rax(value: str) -> str:
+def _format_signed_karma(value: str) -> str:
     number = _safe_float(value)
     if number is None:
         return ""
     return f"{number:+.2f}"
 
 
-def _format_rax(value: str) -> str:
+def _format_karma(value: str) -> str:
     number = _safe_float(value)
     if number is None:
         return ""
@@ -121,13 +121,13 @@ def _format_rax(value: str) -> str:
 
 
 def _summary_line(market_rows: list[dict[str, str]], position_rows: list[dict[str, str]]) -> str:
-    total_rax = sum(_safe_int(str(row.get("recommended_amount") or "")) or 0 for row in market_rows)
+    total_karma = sum(_safe_int(str(row.get("recommended_amount") or "")) or 0 for row in market_rows)
     active_buys = sum(1 for row in market_rows if (_safe_int(str(row.get("recommended_amount") or "")) or 0) > 0)
     open_positions = len(position_rows)
     current_cashout = sum(_safe_float(str(row.get("cashout_now") or "")) or 0.0 for row in position_rows)
     return (
         f"**Summary:** {len(market_rows)} markets, {active_buys} max-buy recommendations, "
-        f"{open_positions} open positions, current cashout {current_cashout:.2f} rax."
+        f"{open_positions} open positions, current cashout {current_cashout:.2f} karma."
     )
 
 
@@ -138,7 +138,7 @@ def prediction_summary_line(
     return _summary_line(market_rows, position_rows)
 
 
-def _selection_rax_text(row: dict[str, str]) -> str:
+def _selection_karma_text(row: dict[str, str]) -> str:
     outcome = str(row.get("best_outcome") or "").strip()
     amount = _safe_int(str(row.get("recommended_amount") or "")) or 0
     if not outcome:
@@ -149,7 +149,7 @@ def _selection_rax_text(row: dict[str, str]) -> str:
 
 def _real_price_text(row: dict[str, str]) -> str:
     probability = _format_probability(str(row.get("best_real_prob") or ""))
-    payout = _format_rax(str(row.get("best_payout_per_1") or ""))
+    payout = _format_karma(str(row.get("best_payout_per_1") or ""))
     if probability and payout:
         return f"{probability} ({payout}x)"
     return probability or payout
@@ -173,7 +173,7 @@ def _best_outcome_slot(row: dict[str, str]) -> str:
 
 
 def _ev_text(row: dict[str, str]) -> str:
-    ev_10 = _format_signed_rax(str(row.get(f"outcome_{_best_outcome_slot(row)}_ev_for_10") or ""))
+    ev_10 = _format_signed_karma(str(row.get(f"outcome_{_best_outcome_slot(row)}_ev_for_10") or ""))
     ev_percent = _format_signed_percent(str(row.get("best_ev_percent") or ""))
     if ev_10 and ev_percent:
         return f"{ev_10} / 10 ({ev_percent})"
@@ -345,8 +345,8 @@ def _explainer() -> list[str]:
         "- `Total` uses the sportsbook total consensus at the matching over/under line.",
         "- `Run in 1st inning?` maps sportsbook `Over 0.5 runs in 1st inning` to `YRFI` and `Under 0.5` to `NRFI`.",
         "- `Consensus Prob (Edge)` shows sportsbook fair win probability and the edge in percentage points, so `+14.00%` means a `0.14` probability gap.",
-        "- EV per 1 rax is `fair probability / Real probability - 1`.",
-        "- `EV / 10` shows the expected rax gain or loss for a `10` rax buy at the current Real price.",
+        "- EV per 1 karma is `fair probability / Real probability - 1`.",
+        "- `EV / 10` shows the expected karma gain or loss for a `10` karma buy at the current Real price.",
         "- Open positions compare `Cashout Now` against `Hold Fair Value = fair win probability * payout if the position wins`.",
         "- `Hold-Cashout EV` is the incremental value of keeping the position from here instead of selling now.",
         "- Recommendations currently follow the same rule you wanted on the poll side: max buy if EV is positive, otherwise `0`.",
@@ -400,12 +400,12 @@ def render_prediction_sections(
 
         game_market_rows = grouped_markets.get(key) or []
         if game_market_rows:
-            sections.append("| Market | Selection+Rax | Real Price | Consensus Prob (Edge) | EV / 10 | Books |")
+            sections.append("| Market | Selection+Karma | Real Price | Consensus Prob (Edge) | EV / 10 | Books |")
             sections.append("| --- | --- | --- | --- | --- | --- |")
             for row in game_market_rows:
                 cells = [
                     _market_label(row),
-                    _selection_rax_text(row),
+                    _selection_karma_text(row),
                     _real_price_text(row),
                     _consensus_text(row),
                     _ev_text(row),
@@ -421,11 +421,11 @@ def render_prediction_sections(
             for row in game_position_rows:
                 cells = [
                     _position_market_cell(row),
-                    _format_rax(str(row.get("cashout_now") or "")),
-                    _format_rax(str(row.get("hold_fair_value") or "")),
-                    _format_signed_rax(str(row.get("hold_vs_cashout_ev") or "")),
-                    _format_signed_rax(str(row.get("hold_total_ev") or "")),
-                    _format_signed_rax(str(row.get("cashout_total_pl") or "")),
+                    _format_karma(str(row.get("cashout_now") or "")),
+                    _format_karma(str(row.get("hold_fair_value") or "")),
+                    _format_signed_karma(str(row.get("hold_vs_cashout_ev") or "")),
+                    _format_signed_karma(str(row.get("hold_total_ev") or "")),
+                    _format_signed_karma(str(row.get("cashout_total_pl") or "")),
                     _position_action_cell(row),
                 ]
                 sections.append("| " + " | ".join(_table_escape(cell) for cell in cells) + " |")
@@ -449,7 +449,7 @@ def render_prediction_sheet(
         "",
         _summary_line(market_rows, position_rows),
         "",
-        "`Selection+Rax` is the side plus the recommended buy size, for example `DET10000` or `YRFI10000`. A `0` means pass at the current Real price.",
+        "`Selection+Karma` is the side plus the recommended buy size, for example `DET10000` or `YRFI10000`. A `0` means pass at the current Real price.",
         "`Action` in the open positions table is the current hold-vs-cashout recommendation.",
         "",
     ]

@@ -85,7 +85,16 @@ TOURNAMENT_POLL_KINDS = {
     "tournament_group_winner",
     "tournament_player_award",
 }
-UNPRICED_POLL_KINDS = ZERO_COST_PLAYER_POLL_KINDS | {"team_stat", "golf_leaderboard"} | TOURNAMENT_POLL_KINDS
+NBA_DRAFT_POLL_KINDS = {
+    "nba_draft_pick",
+    "nba_draft_yes_no",
+}
+UNPRICED_POLL_KINDS = (
+    ZERO_COST_PLAYER_POLL_KINDS
+    | {"team_stat", "golf_leaderboard"}
+    | TOURNAMENT_POLL_KINDS
+    | NBA_DRAFT_POLL_KINDS
+)
 SOCCER_REAL_APP_HOME_COHORT = 777777777
 REAL_APP_HOME_COHORT_BY_SPORT = {
     "soccer": SOCCER_REAL_APP_HOME_COHORT,
@@ -100,6 +109,18 @@ GROUP_STAGE_DRAFT_MARKET_WEIGHTS = {
     "mostassists": 0.85,
     "goldenball": 0.55,
     "youngplayer": 0.25,
+}
+WORLD_CUP_GROUP_STAGE_DRAFT_CONTEST_IDS = {"1891"}
+WORLD_CUP_KNOCKOUT_ROUND_DRAFT_CONTEST_IDS = {"1957"}
+WORLD_CUP_DRAFT_CONTEST_IDS = (
+    WORLD_CUP_GROUP_STAGE_DRAFT_CONTEST_IDS | WORLD_CUP_KNOCKOUT_ROUND_DRAFT_CONTEST_IDS
+)
+KNOCKOUT_DRAFT_REMAINING_GAMES = 5
+KNOCKOUT_DRAFT_DIRECT_REACH_STATS = {
+    "reachroundof16": 1,
+    "reachquarterfinals": 2,
+    "reachsemifinals": 3,
+    "reachfinal": 4,
 }
 
 
@@ -569,6 +590,29 @@ def _is_golf_best_score_text(text: str) -> bool:
     )
 
 
+def _is_nba_draft_player_pick_text(text: str) -> bool:
+    normalized = normalize_text(text)
+    return bool(
+        re.search(r"\b(?:pick\s+)?[0-9]+(?:st|nd|rd|th)\s+pick\b", normalized)
+        or re.search(r"\bpick\s+[0-9]+\b", normalized)
+        or re.search(r"\bplayer\s+to\s+get\s+drafted\b", normalized)
+    )
+
+
+def _is_nba_draft_generalpoll(sport_key: str, combined_text: str, entity_type: str) -> bool:
+    if sport_key not in {"nba", "ncaam"}:
+        return False
+    normalized = normalize_text(combined_text)
+    if entity_type == "player" and _is_nba_draft_player_pick_text(normalized):
+        return True
+    return bool(
+        "draft" in normalized
+        or "picked in r1" in normalized
+        or "get picked in r1" in normalized
+        or re.search(r"\bgo\s+[0-9]+(?:st|nd|rd|th)?\s+or\s+earlier\b", normalized)
+    )
+
+
 def _poll_kind(
     additional: dict[str, Any],
     *,
@@ -656,6 +700,10 @@ def _poll_kind(
         ).strip().lower()
         conference = normalize_text(str(additional.get("conference") or post_additional.get("conference") or ""))
         entity_type = normalize_text(str(additional.get("entityType") or ""))
+        if _is_nba_draft_generalpoll(sport_key, combined_text, entity_type):
+            if entity_type == "player" or _is_nba_draft_player_pick_text(combined_text):
+                return "nba_draft_pick"
+            return "nba_draft_yes_no"
         if sport_key == "soccer" and (conference == "wc" or "world cup" in combined_text):
             if entity_type == "team":
                 if "group" in combined_text and "winner" in combined_text:
@@ -1057,6 +1105,34 @@ def _ufc_name_pair_matches(
     )
 
 
+def _soccer_name_match(left: str, right: str) -> bool:
+    left_key = normalize_player_name(left)
+    right_key = normalize_player_name(right)
+    if not left_key or not right_key:
+        return False
+    if left_key == right_key:
+        return True
+    left_parts = left_key.split()
+    right_parts = right_key.split()
+    if len(left_parts) < 2 or len(right_parts) < 2:
+        return False
+    return sorted(left_parts) == sorted(right_parts)
+
+
+def _player_name_match_for_sport(sport: str, left: str, right: str) -> bool:
+    left_key = normalize_player_name(left)
+    right_key = normalize_player_name(right)
+    if not left_key or not right_key:
+        return False
+    if left_key == right_key:
+        return True
+    if sport == "ufc":
+        return _ufc_name_match(left, right)
+    if sport == "soccer":
+        return _soccer_name_match(left, right)
+    return False
+
+
 def _matching_player_quotes(
     markets: list[MarketRow],
     *,
@@ -1082,9 +1158,7 @@ def _matching_player_quotes(
             continue
         if market.stat_key != stat_key:
             continue
-        if market.player_name != normalized_player and not (
-            sport == "ufc" and _ufc_name_match(player_name, market.player_name)
-        ):
+        if not _player_name_match_for_sport(sport, normalized_player, market.player_name):
             continue
         if market.line is None or market.over_odds is None or market.under_odds is None:
             continue
@@ -5346,7 +5420,10 @@ def _group_same_game_player_markets(
             continue
         if not _same_game(game, market) or not market.player_name:
             continue
-        if allowed_players and market.player_name not in allowed_players:
+        if allowed_players and not any(
+            _player_name_match_for_sport(sport, market.player_name, allowed_player)
+            for allowed_player in allowed_players
+        ):
             continue
         grouped.setdefault(market.player_name, []).append(market)
         display_names.setdefault(
@@ -7539,6 +7616,14 @@ def _poll_detail_text(poll: dict[str, Any], post: dict[str, Any]) -> str:
     return _first_text(((post.get("content") or {}).get("nodes")) or [])
 
 
+def _nba_draft_detail_text(poll: dict[str, Any], post: dict[str, Any]) -> str:
+    detail = _poll_detail_text(poll, post)
+    content = _first_text(((post.get("content") or {}).get("nodes")) or [])
+    if content and normalize_text(detail).replace(" ", "") in {"", "draft"}:
+        return content
+    return detail or content
+
+
 def _poll_season(entry: dict[str, Any], poll: dict[str, Any]) -> str:
     additional = poll.get("additionalInfo") or {}
     for value in (
@@ -8109,6 +8194,1030 @@ def _recommend_tournament_poll(
     )
 
 
+def _nba_draft_pick_range(detail: str) -> tuple[int, int] | None:
+    text = str(detail or "").strip()
+    normalized = normalize_text(text)
+    range_match = re.search(r"\b([0-9]+)\s*(?:-|to)\s*([0-9]+)\b", text, flags=re.IGNORECASE)
+    if not range_match:
+        range_match = re.search(r"\bdrafted\s+([0-9]+)\s+([0-9]+)\b", normalized)
+    if range_match:
+        lower = int(range_match.group(1))
+        upper = int(range_match.group(2))
+        if lower > upper:
+            lower, upper = upper, lower
+        return lower, upper
+
+    exact_match = re.search(r"\b([0-9]+)(?:st|nd|rd|th)?\s+pick\b", normalized)
+    if not exact_match:
+        exact_match = re.search(r"\bpick\s+([0-9]+)\b", normalized)
+    if exact_match:
+        pick = int(exact_match.group(1))
+        return pick, pick
+    return None
+
+
+def _nba_draft_name_key(value: Any) -> str:
+    parts = [
+        part
+        for part in normalize_player_name(str(value or "")).split()
+        if part not in {"jr", "sr", "ii", "iii", "iv", "v"}
+    ]
+    return "".join(parts)
+
+
+def _nba_draft_label_matches_name(label: Any, name: Any) -> bool:
+    left = _nba_draft_name_key(label)
+    right = _nba_draft_name_key(name)
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    return len(left) >= 5 and len(right) >= 5 and (left in right or right in left)
+
+
+def _nba_draft_candidate_matches_label(label: str, candidate: dict[str, Any]) -> bool:
+    if _labels_might_match(label, candidate, "player"):
+        return True
+    for key in ("selection", "label", "short_label"):
+        if _nba_draft_label_matches_name(label, candidate.get(key)):
+            return True
+    return False
+
+
+def _nba_draft_market_type_key(raw: dict[str, Any], market: MarketRow | None = None) -> str:
+    market_type = str(raw.get("market_type") or "").strip()
+    if not market_type and market is not None:
+        market_type = str(market.market_family or "").strip()
+    return normalize_text(market_type).replace(" ", "").replace("_", "")
+
+
+def _nba_draft_pick_number_from_stat(stat: str) -> int | None:
+    match = re.match(r"pick([0-9]{1,2})$", normalize_stat(str(stat or "")))
+    if not match:
+        return None
+    value = int(match.group(1))
+    return value if 1 <= value <= 60 else None
+
+
+def _nba_draft_pick_number_from_market(raw: dict[str, Any]) -> int | None:
+    stat_pick = _nba_draft_pick_number_from_stat(str(raw.get("stat") or ""))
+    if stat_pick is not None:
+        return stat_pick
+    haystack = normalize_text(
+        " ".join(
+            str(raw.get(key) or "")
+            for key in ("provider_market_name", "question", "stat")
+        )
+    )
+    for pattern in (
+        r"\bnumber\s+([0-9]{1,2})\s+pick\b",
+        r"\bpick\s+([0-9]{1,2})\b",
+        r"\b([0-9]{1,2})(?:st|nd|rd|th)?\s+(?:overall\s+)?pick\b",
+    ):
+        match = re.search(pattern, haystack)
+        if match:
+            value = int(match.group(1))
+            if 1 <= value <= 60:
+                return value
+    return None
+
+
+def _nba_draft_top_number_from_market(raw: dict[str, Any]) -> int | None:
+    stat = normalize_stat(str(raw.get("stat") or ""))
+    match = re.match(r"top([0-9]{1,2})$", stat)
+    if match:
+        value = int(match.group(1))
+        return value if value > 0 else None
+    haystack = normalize_text(
+        " ".join(
+            str(raw.get(key) or "")
+            for key in ("provider_market_name", "question", "stat")
+        )
+    )
+    match = re.search(r"\btop\s+([0-9]{1,2})\b", haystack)
+    if not match:
+        return None
+    value = int(match.group(1))
+    return value if value > 0 else None
+
+
+def _nba_draft_rank_score(rank: float, lower: int, upper: int) -> float:
+    if rank < lower:
+        return 1.0 + ((float(lower) - rank) * 100.0)
+    if rank > upper:
+        return 1.0 + ((rank - float(upper)) * 100.0) + float(upper - lower + 1)
+    return 1.0 + (rank - float(lower))
+
+
+def _nba_draft_player_candidates(
+    client: Any,
+    entry: dict[str, Any],
+    *,
+    poll: dict[str, Any],
+    detail: str,
+) -> tuple[list[dict[str, Any]], int]:
+    season = _poll_season(entry, poll)
+    draft_range = _nba_draft_pick_range(detail)
+    players = _search_tournament_players(
+        client,
+        "ncaam",
+        poll_id=poll.get("id"),
+        season=season,
+    )
+    unavailable_count = 0
+    candidates: list[dict[str, Any]] = []
+    for player in players:
+        label = _player_candidate_label(player)
+        if not label:
+            continue
+        if is_unavailable_or_questionable_record(player):
+            unavailable_count += 1
+            continue
+        draft_rank = _positive_rank(
+            player.get("primaryRanking"),
+            fallback=5000.0 + _positive_rank(player.get("alltimeRanking"), fallback=999999.0),
+        )
+        rank_score = draft_rank
+        if draft_range is not None:
+            rank_score = _nba_draft_rank_score(draft_rank, draft_range[0], draft_range[1])
+        team = player.get("team") or {}
+        team_key = str(team.get("key") or "").strip()
+        display_name = str(player.get("displayName") or "").strip()
+        candidates.append(
+            {
+                "selection": label,
+                "label": label,
+                "key": str(player.get("id") or "").strip(),
+                "short_label": display_name,
+                "rank": rank_score,
+                "draft_rank": draft_rank,
+                "position": str(player.get("position") or "").strip(),
+                "team": team_key,
+                "source_line": (
+                    f"{label}"
+                    f"{f' ({team_key})' if team_key else ''}: "
+                    f"Real NCAAM draft rank {int(draft_rank) if draft_rank < 999999 else 'n/a'}"
+                ),
+            }
+        )
+    candidates.sort(
+        key=lambda item: (
+            float(item.get("rank") or 999999),
+            float(item.get("draft_rank") or 999999),
+            str(item.get("selection") or ""),
+        )
+    )
+    _candidate_probability(candidates)
+    return candidates, unavailable_count
+
+
+def _nba_draft_market_matches_detail(raw: dict[str, Any], detail: str) -> bool:
+    stat = normalize_stat(str(raw.get("stat") or ""))
+    detail_range = _nba_draft_pick_range(detail)
+    market_type = _nba_draft_market_type_key(raw)
+    haystack = normalize_text(
+        " ".join(
+            str(raw.get(key) or "")
+            for key in (
+                "provider_market_name",
+                "market_type",
+                "stat",
+                "question",
+                "provider_league",
+            )
+        )
+    )
+    if market_type not in {"nbadraftfuture", "nbadraft"} and "nba draft" not in haystack and "draft" not in haystack and not stat.startswith("pick"):
+        return False
+    if detail_range is None:
+        return "draft" in haystack
+    lower, upper = detail_range
+    pick_number = _nba_draft_pick_number_from_market(raw)
+    if pick_number is not None:
+        return lower <= pick_number <= upper
+    top_number = _nba_draft_top_number_from_market(raw)
+    if top_number is not None:
+        return lower == 1 and upper == top_number
+    if lower == upper:
+        exact_stat = f"pick{lower}"
+        return (
+            stat == exact_stat
+            or f"pick {lower}" in haystack
+            or f"number {lower} overall pick" in haystack
+            or f"{lower} overall pick" in haystack
+        )
+    return False
+
+
+def _attach_nba_draft_market_prices(
+    candidates: list[dict[str, Any]],
+    markets: list[MarketRow],
+    *,
+    detail: str,
+) -> bool:
+    matched_any = False
+    for market in markets:
+        if market.sport != "nba":
+            continue
+        raw = market.raw or {}
+        market_type = _nba_draft_market_type_key(raw, market)
+        if market_type not in {"nbadraftfuture", "nba_draft_future"}:
+            continue
+        if not _nba_draft_market_matches_detail(raw, detail):
+            continue
+        pick_number = _nba_draft_pick_number_from_market(raw)
+        for outcome in _market_price_outcomes(market):
+            odds = _normalize_option_odds({"odds": outcome.get("odds")})
+            if odds is None:
+                continue
+            label = str(outcome.get("label") or outcome.get("key") or "").strip()
+            if not label:
+                continue
+            for candidate in candidates:
+                if not _nba_draft_candidate_matches_label(label, candidate):
+                    continue
+                candidate.setdefault("market_prices", []).append(
+                    {
+                        "book": market.book,
+                        "label": label,
+                        "odds": odds,
+                        "pick_number": pick_number,
+                        "updated_at": market.updated_at,
+                    }
+                )
+                matched_any = True
+    if not matched_any:
+        return False
+
+    priced_candidates = [candidate for candidate in candidates if candidate.get("market_prices")]
+    raw_prob_total = 0.0
+    for candidate in priced_candidates:
+        prices = candidate.get("market_prices") or []
+        implied_values = [american_to_implied_prob(price["odds"]) for price in prices]
+        detail_range = _nba_draft_pick_range(detail)
+        if detail_range is not None and detail_range[0] != detail_range[1]:
+            avg_implied = sum(implied_values)
+        else:
+            avg_implied = sum(implied_values) / len(implied_values)
+        candidate["market_raw_prob"] = avg_implied
+        raw_prob_total += avg_implied
+        display_price = max(prices, key=lambda price: american_to_implied_prob(price["odds"]))
+        candidate["sportsbook_odds"] = display_price["odds"]
+        candidate["matched_books"] = len({str(price.get("book") or "") for price in prices if price.get("book")})
+        candidate["books"] = " | ".join(sorted({str(price.get("book") or "") for price in prices if price.get("book")}))
+        candidate["odds_updated_at"] = _latest_odds_updated_at(
+            [
+                type("_OddsItem", (), {"updated_at": price.get("updated_at")})()
+                for price in prices
+            ]
+        )
+    if raw_prob_total <= 0:
+        return True
+    for candidate in priced_candidates:
+        fair_prob = float(candidate.get("market_raw_prob") or 0.0) / raw_prob_total
+        candidate["fair_prob"] = fair_prob
+        candidate["fair_odds"] = probability_to_american(fair_prob)
+    for candidate in candidates:
+        if candidate.get("market_prices"):
+            continue
+        candidate["fair_prob"] = 0.0
+        candidate["fair_odds"] = ""
+    return True
+
+
+def _recommend_nba_draft_pick_poll(
+    entry: dict[str, Any],
+    markets: list[MarketRow],
+    sport: str,
+    *,
+    client: Any,
+) -> dict[str, Any]:
+    game = entry["game"]
+    post = entry["post"]
+    poll = entry["poll"]
+    detail = _nba_draft_detail_text(poll, post)
+    candidates, unavailable_count = _nba_draft_player_candidates(
+        client,
+        entry,
+        poll=poll,
+        detail=detail,
+    )
+    futures_matched = _attach_nba_draft_market_prices(candidates, markets, detail=detail)
+    if futures_matched:
+        candidates.sort(
+            key=lambda item: (
+                -float(item.get("fair_prob") or 0.0),
+                float(item.get("draft_rank") or 999999),
+                str(item.get("selection") or ""),
+            )
+        )
+
+    option_candidates = candidates[:5]
+    option_fields = _option_fields([{"label": candidate.get("selection") or ""} for candidate in option_candidates])
+    sportsbook_fields = _book_outcome_fields(
+        [
+            {
+                "label": candidate.get("selection") or "",
+                "odds": candidate.get("sportsbook_odds") if candidate.get("sportsbook_odds") not in ("", None) else "",
+            }
+            for candidate in option_candidates
+        ]
+    )
+    base = {
+        "poll_id": poll.get("id"),
+        "post_id": post.get("id"),
+        "sport": sport,
+        "game_id": game.get("id"),
+        "game_time": game.get("dateTime") or "",
+        "home_team": game.get("homeTeamKey") or "",
+        "away_team": game.get("awayTeamKey") or "",
+        "header": post.get("header") or detail or "Draft",
+        "content_text": _first_text(((post.get("content") or {}).get("nodes")) or []) or detail,
+        "poll_kind": "nba_draft_pick",
+        "player_name": "",
+        "stat": normalize_stat(detail),
+        "line": "",
+        "can_wager": False,
+        "max_wager": 0,
+        **option_fields,
+        **sportsbook_fields,
+    }
+    if not candidates:
+        return {
+            **base,
+            "status": "no_market",
+            "recommended_option": "",
+            "recommended_amount": 0,
+            "stake_fraction_of_max": 0.0,
+            "recommended_ev_percent": "",
+            "fair_prob": "",
+            "fair_odds": "",
+            "consensus_fair_line": "",
+            "matched_books": 0,
+            "books": "",
+            "notes": "No Real NBA Draft prospect candidates were returned for this poll.",
+        }
+
+    pick = candidates[0]
+    fair_prob = float(pick.get("fair_prob") or 0.0)
+    notes = (
+        "Sportsbook NBA Draft futures matched this pick poll."
+        if futures_matched
+        else "No matching NBA Draft futures market for this pick poll; using Real NCAAM draft ranking as a fixed-return proxy."
+    )
+    if unavailable_count:
+        notes = f"{notes} Skipped {unavailable_count} unavailable/questionable prospect candidates."
+    player_choices = [
+        {
+            "selection": candidate.get("selection") or "",
+            "player_key": candidate.get("key") or "",
+            "probability_rank": index + 1,
+            "fair_prob": candidate.get("fair_prob") or 0.0,
+            "fair_odds": candidate.get("fair_odds") or probability_to_american(0.5),
+            "ranked_payout": 0,
+            "expected_value": _zero_put_expected_value(float(candidate.get("fair_prob") or 0.0)),
+            "sportsbook_odds": candidate.get("sportsbook_odds") or "",
+            "matched_books": candidate.get("matched_books") or 0,
+            "books": candidate.get("books") or "",
+            "odds_updated_at": candidate.get("odds_updated_at") or "",
+            "source_lines": candidate.get("source_line") or "",
+            "source_note": notes,
+        }
+        for index, candidate in enumerate(candidates[:20])
+    ]
+    return _with_odds_updated(
+        {
+            **base,
+            "status": "pick",
+            "recommended_option": str(pick.get("selection") or ""),
+            "recommended_amount": 0,
+            "stake_fraction_of_max": 0.0,
+            "recommended_ev_percent": "",
+            "fair_prob": round(fair_prob, 6),
+            "fair_odds": int(pick.get("fair_odds") or probability_to_american(fair_prob or 0.5)),
+            "consensus_fair_line": "",
+            "matched_books": int(pick.get("matched_books") or 0),
+            "books": str(pick.get("books") or ""),
+            "odds_updated_at": str(pick.get("odds_updated_at") or ""),
+            "player_choices_json": _zero_cost_player_choices_json(player_choices),
+            "option_choices_json": _tournament_choices_json(candidates),
+            "source_lines": "\n".join(
+                str(candidate.get("source_line") or "")
+                for candidate in candidates[:10]
+                if candidate.get("source_line")
+            ),
+            "notes": notes,
+        },
+        [],
+    )
+
+
+def _option_vote_count(option: dict[str, Any]) -> float:
+    for key in ("count", "voteCount", "votes", "selectedCount"):
+        try:
+            value = float(option.get(key))
+        except Exception:
+            continue
+        if math.isfinite(value) and value >= 0:
+            return value
+    return 0.0
+
+
+def _draft_yes_no_evaluations(options: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    counts = [_option_vote_count(option) for option in options]
+    total_count = sum(counts)
+    evaluations: list[dict[str, Any]] = []
+    for option_index, option in enumerate(options):
+        label = str(option.get("label") or "").strip()
+        if not label:
+            continue
+        real_odds = _normalize_option_odds(option)
+        if real_odds is None:
+            real_odds = 100
+        if total_count > 0:
+            fair_prob = counts[option_index] / total_count
+        else:
+            fair_prob = 1.0 / max(len(options), 1)
+        evaluations.append(
+            {
+                "option": option,
+                "slot": _option_slot_name(option_index),
+                "key": normalize_text(label).replace(" ", ""),
+                "label": label,
+                "real_odds": real_odds,
+                "book_outcome": {},
+                "evaluation": _evaluate_binary_offer(fair_prob, real_odds),
+                "count": counts[option_index],
+            }
+        )
+    return evaluations
+
+
+def _nba_draft_yes_no_key(label: Any) -> str:
+    key = normalize_text(str(label or "")).replace(" ", "")
+    if key.startswith("yes"):
+        return "yes"
+    if key.startswith("no"):
+        return "no"
+    return key
+
+
+def _nba_draft_player_before_target(detail: str) -> tuple[str, str] | None:
+    text = str(detail or "").strip()
+    match = re.search(
+        r"\bwill\s+(.+?)\s+get\s+(?:drafted|picked)\s+before\s+(.+?)(?:\?|$)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return clean_player_name(match.group(1)).strip(), clean_player_name(match.group(2)).strip()
+
+
+def _nba_draft_go_earlier_target(detail: str) -> tuple[str, int] | None:
+    text = str(detail or "").strip()
+    match = re.search(
+        r"\bwill\s+(.+?)\s+go\s+([0-9]+)(?:st|nd|rd|th)?\s+or\s+earlier\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return clean_player_name(match.group(1)).strip(), int(match.group(2))
+
+
+def _nba_draft_first_round_target(detail: str) -> str:
+    text = str(detail or "").strip()
+    match = re.search(
+        r"\bwill\s+(.+?)\s+get\s+(?:picked|drafted)\s+in\s+(?:r1|round\s+1|the\s+1st\s+round|the\s+first\s+round)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        match = re.search(
+            r"\bwill\s+(.+?)\s+get\s+(?:picked|drafted)\s+(?:in\s+)?(?:r1|round\s+1|1st\s+round|first\s+round)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    return clean_player_name(match.group(1)).strip() if match else ""
+
+
+def _nba_draft_market_outcomes(market: MarketRow) -> list[dict[str, Any]]:
+    outcomes: list[dict[str, Any]] = []
+    for outcome in _market_price_outcomes(market):
+        odds = _normalize_option_odds({"odds": outcome.get("odds")})
+        label = str(outcome.get("label") or outcome.get("key") or "").strip()
+        if odds is None or not label:
+            continue
+        outcomes.append({"label": label, "key": outcome.get("key") or label, "odds": odds})
+    return outcomes
+
+
+def _nba_draft_exact_pick_table(markets: list[MarketRow]) -> dict[str, list[dict[str, Any]]]:
+    table: dict[str, list[dict[str, Any]]] = {}
+    for market in markets:
+        if market.sport != "nba":
+            continue
+        raw = market.raw or {}
+        if _nba_draft_market_type_key(raw, market) != "nbadraftfuture":
+            continue
+        pick_number = _nba_draft_pick_number_from_market(raw)
+        if pick_number is None:
+            continue
+        outcomes = _nba_draft_market_outcomes(market)
+        implied_total = sum(american_to_implied_prob(int(outcome["odds"])) for outcome in outcomes)
+        if implied_total <= 0:
+            continue
+        for outcome in outcomes:
+            key = _nba_draft_name_key(outcome.get("label"))
+            if not key:
+                continue
+            odds = int(outcome["odds"])
+            fair_prob = american_to_implied_prob(odds) / implied_total
+            table.setdefault(key, []).append(
+                {
+                    "pick": pick_number,
+                    "prob": fair_prob,
+                    "odds": odds,
+                    "label": outcome.get("label") or "",
+                    "book": market.book,
+                    "updated_at": market.updated_at,
+                }
+            )
+    return table
+
+
+def _nba_draft_exact_pick_probability(
+    markets: list[MarketRow],
+    player_name: str,
+    *,
+    lower: int,
+    upper: int,
+) -> dict[str, Any] | None:
+    table = _nba_draft_exact_pick_table(markets)
+    entries = table.get(_nba_draft_name_key(player_name)) or []
+    matching = [entry for entry in entries if lower <= int(entry.get("pick") or 0) <= upper]
+    if not matching:
+        return None
+    fair_prob = max(0.0, min(1.0, sum(float(entry.get("prob") or 0.0) for entry in matching)))
+    best = max(matching, key=lambda item: float(item.get("prob") or 0.0))
+    return {
+        "fair_prob": fair_prob,
+        "sportsbook_odds": int(best.get("odds") or probability_to_american(fair_prob or 0.5)),
+        "books": " | ".join(sorted({str(entry.get("book") or "") for entry in matching if entry.get("book")})),
+        "matched_books": len({str(entry.get("book") or "") for entry in matching if entry.get("book")}),
+        "odds_updated_at": _latest_odds_updated_at(
+            [type("_OddsItem", (), {"updated_at": entry.get("updated_at")})() for entry in matching]
+        ),
+        "source_line": (
+            f"{player_name}: exact-pick DK distribution for picks {lower}-{upper} "
+            f"-> {fair_prob * 100.0:.1f}%"
+        ),
+    }
+
+
+def _nba_draft_direct_future_probability(
+    markets: list[MarketRow],
+    player_name: str,
+    *,
+    stat: str,
+) -> dict[str, Any] | None:
+    target_stat = normalize_stat(stat)
+    matches: list[dict[str, Any]] = []
+    for market in markets:
+        if market.sport != "nba":
+            continue
+        raw = market.raw or {}
+        if _nba_draft_market_type_key(raw, market) != "nbadraftfuture":
+            continue
+        if normalize_stat(str(raw.get("stat") or "")) != target_stat:
+            continue
+        for outcome in _nba_draft_market_outcomes(market):
+            if not _nba_draft_label_matches_name(outcome.get("label"), player_name):
+                continue
+            odds = int(outcome["odds"])
+            matches.append(
+                {
+                    "prob": american_to_implied_prob(odds),
+                    "odds": odds,
+                    "book": market.book,
+                    "updated_at": market.updated_at,
+                    "label": outcome.get("label") or player_name,
+                }
+            )
+    if not matches:
+        return None
+    fair_prob = max(0.0, min(1.0, sum(float(item["prob"]) for item in matches) / len(matches)))
+    best = max(matches, key=lambda item: float(item.get("prob") or 0.0))
+    return {
+        "fair_prob": fair_prob,
+        "sportsbook_odds": int(best.get("odds") or probability_to_american(fair_prob or 0.5)),
+        "books": " | ".join(sorted({str(item.get("book") or "") for item in matches if item.get("book")})),
+        "matched_books": len({str(item.get("book") or "") for item in matches if item.get("book")}),
+        "odds_updated_at": _latest_odds_updated_at(
+            [type("_OddsItem", (), {"updated_at": item.get("updated_at")})() for item in matches]
+        ),
+        "source_line": (
+            f"{player_name}: DK {target_stat} future {int(best.get('odds') or 0):+d} "
+            f"-> {fair_prob * 100.0:.1f}%"
+        ),
+    }
+
+
+def _nba_draft_binary_probability(
+    markets: list[MarketRow],
+    player_name: str,
+    *,
+    stat: str,
+) -> dict[str, Any] | None:
+    target_stat = normalize_stat(stat)
+    matches: list[dict[str, Any]] = []
+    for market in markets:
+        if market.sport != "nba":
+            continue
+        raw = market.raw or {}
+        if _nba_draft_market_type_key(raw, market) != "nbadraftbinary":
+            continue
+        if normalize_stat(str(raw.get("stat") or "")) != target_stat:
+            continue
+        market_player = str(raw.get("player_name") or market.player_name or "").strip()
+        if not _nba_draft_label_matches_name(market_player, player_name):
+            continue
+        if market.over_odds is None:
+            continue
+        yes_implied = american_to_implied_prob(int(market.over_odds))
+        no_implied = american_to_implied_prob(int(market.under_odds)) if market.under_odds is not None else max(1e-9, 1.0 - yes_implied)
+        total = yes_implied + no_implied
+        fair_prob = yes_implied / total if total > 0 else yes_implied
+        matches.append(
+            {
+                "prob": fair_prob,
+                "yes_odds": int(market.over_odds),
+                "no_odds": int(market.under_odds) if market.under_odds is not None else probability_to_american(1.0 - fair_prob),
+                "book": market.book,
+                "updated_at": market.updated_at,
+            }
+        )
+    if not matches:
+        return None
+    fair_prob = max(0.0, min(1.0, sum(float(item["prob"]) for item in matches) / len(matches)))
+    best = max(matches, key=lambda item: float(item.get("prob") or 0.0))
+    return {
+        "fair_prob": fair_prob,
+        "sportsbook_odds": int(best.get("yes_odds") or probability_to_american(fair_prob or 0.5)),
+        "no_sportsbook_odds": int(best.get("no_odds") or probability_to_american(1.0 - fair_prob)),
+        "books": " | ".join(sorted({str(item.get("book") or "") for item in matches if item.get("book")})),
+        "matched_books": len({str(item.get("book") or "") for item in matches if item.get("book")}),
+        "odds_updated_at": _latest_odds_updated_at(
+            [type("_OddsItem", (), {"updated_at": item.get("updated_at")})() for item in matches]
+        ),
+        "source_line": (
+            f"{player_name}: DK {target_stat} yes/no {int(best.get('yes_odds') or 0):+d} "
+            f"-> {fair_prob * 100.0:.1f}%"
+        ),
+    }
+
+
+def _nba_draft_position_probability(
+    markets: list[MarketRow],
+    player_name: str,
+    *,
+    pick_number: int,
+) -> dict[str, Any] | None:
+    target_line = float(pick_number) + 0.5
+    matches: list[dict[str, Any]] = []
+    for market in markets:
+        if market.sport != "nba":
+            continue
+        raw = market.raw or {}
+        if _nba_draft_market_type_key(raw, market) != "nbadraftposition":
+            continue
+        if not _nba_draft_label_matches_name(raw.get("player_name") or market.player_name, player_name):
+            continue
+        if market.line is None or abs(float(market.line) - target_line) > 0.51:
+            continue
+        if market.over_odds is None or market.under_odds is None:
+            continue
+        over_implied = american_to_implied_prob(int(market.over_odds))
+        under_implied = american_to_implied_prob(int(market.under_odds))
+        total = over_implied + under_implied
+        if total <= 0:
+            continue
+        matches.append(
+            {
+                "prob": under_implied / total,
+                "yes_odds": int(market.under_odds),
+                "no_odds": int(market.over_odds),
+                "book": market.book,
+                "updated_at": market.updated_at,
+                "line": float(market.line),
+            }
+        )
+    if not matches:
+        return None
+    fair_prob = max(0.0, min(1.0, sum(float(item["prob"]) for item in matches) / len(matches)))
+    best = max(matches, key=lambda item: float(item.get("prob") or 0.0))
+    return {
+        "fair_prob": fair_prob,
+        "sportsbook_odds": int(best.get("yes_odds") or probability_to_american(fair_prob or 0.5)),
+        "no_sportsbook_odds": int(best.get("no_odds") or probability_to_american(1.0 - fair_prob)),
+        "books": " | ".join(sorted({str(item.get("book") or "") for item in matches if item.get("book")})),
+        "matched_books": len({str(item.get("book") or "") for item in matches if item.get("book")}),
+        "odds_updated_at": _latest_odds_updated_at(
+            [type("_OddsItem", (), {"updated_at": item.get("updated_at")})() for item in matches]
+        ),
+        "source_line": (
+            f"{player_name}: DK draft-position under {float(best.get('line') or target_line):g} "
+            f"-> {fair_prob * 100.0:.1f}%"
+        ),
+    }
+
+
+def _nba_draft_h2h_probability(
+    markets: list[MarketRow],
+    first_player: str,
+    second_player: str,
+) -> dict[str, Any] | None:
+    for market in markets:
+        if market.sport != "nba":
+            continue
+        raw = market.raw or {}
+        if _nba_draft_market_type_key(raw, market) != "nbadrafth2h":
+            continue
+        outcomes = _nba_draft_market_outcomes(market)
+        first = next((outcome for outcome in outcomes if _nba_draft_label_matches_name(outcome.get("label"), first_player)), None)
+        second = next((outcome for outcome in outcomes if _nba_draft_label_matches_name(outcome.get("label"), second_player)), None)
+        if not first or not second:
+            continue
+        first_implied = american_to_implied_prob(int(first["odds"]))
+        second_implied = american_to_implied_prob(int(second["odds"]))
+        total = first_implied + second_implied
+        if total <= 0:
+            continue
+        fair_prob = first_implied / total
+        return {
+            "fair_prob": fair_prob,
+            "sportsbook_odds": int(first["odds"]),
+            "no_sportsbook_odds": int(second["odds"]),
+            "books": market.book,
+            "matched_books": 1,
+            "odds_updated_at": _latest_odds_updated_at([market]),
+            "source_line": (
+                f"{first_player} before {second_player}: DK first-to-be-drafted matchup "
+                f"-> {fair_prob * 100.0:.1f}%"
+            ),
+        }
+    return None
+
+
+def _nba_draft_exact_pick_before_probability(
+    markets: list[MarketRow],
+    first_player: str,
+    second_player: str,
+) -> dict[str, Any] | None:
+    table = _nba_draft_exact_pick_table(markets)
+    first_entries = table.get(_nba_draft_name_key(first_player)) or []
+    second_entries = table.get(_nba_draft_name_key(second_player)) or []
+    if not first_entries or not second_entries:
+        return None
+    first_total = sum(float(entry.get("prob") or 0.0) for entry in first_entries)
+    second_total = sum(float(entry.get("prob") or 0.0) for entry in second_entries)
+    if first_total <= 0 or second_total <= 0:
+        return None
+    fair_prob = 0.0
+    for first_entry in first_entries:
+        first_pick = int(first_entry.get("pick") or 0)
+        first_prob = float(first_entry.get("prob") or 0.0) / first_total
+        second_after_prob = sum(
+            float(second_entry.get("prob") or 0.0) / second_total
+            for second_entry in second_entries
+            if int(second_entry.get("pick") or 0) > first_pick
+        )
+        fair_prob += first_prob * second_after_prob
+    all_entries = first_entries + second_entries
+    return {
+        "fair_prob": max(0.0, min(1.0, fair_prob)),
+        "sportsbook_odds": probability_to_american(max(1e-6, min(0.999999, fair_prob))),
+        "no_sportsbook_odds": probability_to_american(max(1e-6, min(0.999999, 1.0 - fair_prob))),
+        "books": " | ".join(sorted({str(entry.get("book") or "") for entry in all_entries if entry.get("book")})),
+        "matched_books": len({str(entry.get("book") or "") for entry in all_entries if entry.get("book")}),
+        "odds_updated_at": _latest_odds_updated_at(
+            [type("_OddsItem", (), {"updated_at": entry.get("updated_at")})() for entry in all_entries]
+        ),
+        "source_line": (
+            f"{first_player} before {second_player}: DK exact-pick distribution proxy "
+            f"-> {fair_prob * 100.0:.1f}%"
+        ),
+    }
+
+
+def _nba_draft_sportsbook_yes_no_probability(
+    detail: str,
+    markets: list[MarketRow],
+) -> dict[str, Any] | None:
+    earlier_target = _nba_draft_go_earlier_target(detail)
+    if earlier_target is not None:
+        player_name, pick_number = earlier_target
+        direct = _nba_draft_direct_future_probability(markets, player_name, stat=f"top{pick_number}")
+        if direct is None:
+            direct = _nba_draft_position_probability(markets, player_name, pick_number=pick_number)
+        if direct is None:
+            direct = _nba_draft_exact_pick_probability(markets, player_name, lower=1, upper=pick_number)
+        if direct is not None:
+            direct["source_kind"] = "sportsbook"
+            return direct
+
+    first_round_player = _nba_draft_first_round_target(detail)
+    if first_round_player:
+        direct = _nba_draft_binary_probability(markets, first_round_player, stat="firstround")
+        if direct is None:
+            direct = _nba_draft_exact_pick_probability(markets, first_round_player, lower=1, upper=30)
+        if direct is not None:
+            direct["source_kind"] = "sportsbook"
+            return direct
+
+    before_target = _nba_draft_player_before_target(detail)
+    if before_target is not None:
+        first_player, second_player = before_target
+        direct = _nba_draft_h2h_probability(markets, first_player, second_player)
+        if direct is None:
+            direct = _nba_draft_exact_pick_before_probability(markets, first_player, second_player)
+        if direct is not None:
+            direct["source_kind"] = "sportsbook"
+            return direct
+
+    return None
+
+
+def _sportsbook_nba_draft_yes_no_evaluations(
+    evaluations: list[dict[str, Any]],
+    sportsbook_match: dict[str, Any],
+) -> list[dict[str, Any]]:
+    yes_prob = float(sportsbook_match.get("fair_prob") or 0.0)
+    yes_prob = max(0.0, min(1.0, yes_prob))
+    no_prob = 1.0 - yes_prob
+    yes_odds = sportsbook_match.get("sportsbook_odds")
+    no_odds = sportsbook_match.get("no_sportsbook_odds")
+    if no_odds in (None, "", "None"):
+        no_odds = probability_to_american(max(1e-6, min(0.999999, no_prob)))
+    result: list[dict[str, Any]] = []
+    for item in evaluations:
+        key = _nba_draft_yes_no_key(item.get("label"))
+        fair_prob = yes_prob if key == "yes" else no_prob if key == "no" else 0.0
+        offered_odds = int(item.get("real_odds") if item.get("real_odds") is not None else 100)
+        result.append(
+            {
+                **item,
+                "book_outcome": {
+                    "label": "Yes" if key == "yes" else "No" if key == "no" else item.get("label"),
+                    "odds": yes_odds if key == "yes" else no_odds if key == "no" else "",
+                },
+                "evaluation": _evaluate_binary_offer(fair_prob, offered_odds),
+            }
+        )
+    return result
+
+
+def _recommend_nba_draft_yes_no_poll(
+    entry: dict[str, Any],
+    sport: str,
+    markets: list[MarketRow],
+) -> dict[str, Any]:
+    game = entry["game"]
+    post = entry["post"]
+    poll = entry["poll"]
+    detail = _nba_draft_detail_text(poll, post)
+    options = [option for option in (poll.get("options") or []) if isinstance(option, dict)]
+    option_fields = _option_fields(options)
+    base = {
+        "poll_id": poll.get("id"),
+        "post_id": post.get("id"),
+        "sport": sport,
+        "game_id": game.get("id"),
+        "game_time": game.get("dateTime") or "",
+        "home_team": game.get("homeTeamKey") or "",
+        "away_team": game.get("awayTeamKey") or "",
+        "header": post.get("header") or detail or "Draft",
+        "content_text": _first_text(((post.get("content") or {}).get("nodes")) or []) or detail,
+        "poll_kind": "nba_draft_yes_no",
+        "player_name": "",
+        "stat": normalize_stat(detail),
+        "line": "",
+        "can_wager": False,
+        "max_wager": 0,
+        **option_fields,
+        **_book_outcome_fields([]),
+    }
+    evaluations = _draft_yes_no_evaluations(options)
+    if len(evaluations) < 2:
+        return {
+            **base,
+            "status": "missing_poll_data",
+            "recommended_option": "",
+            "recommended_amount": 0,
+            "stake_fraction_of_max": 0.0,
+            "recommended_ev_percent": "",
+            "fair_prob": "",
+            "fair_odds": "",
+            "consensus_fair_line": "",
+            "matched_books": 0,
+            "books": "",
+            "notes": "NBA Draft yes/no poll had fewer than two Real options.",
+        }
+
+    sportsbook_match = _nba_draft_sportsbook_yes_no_probability(detail, markets)
+    if sportsbook_match is not None:
+        evaluations = _sportsbook_nba_draft_yes_no_evaluations(evaluations, sportsbook_match)
+
+    selected_action = _choose_zero_or_max_action(poll.get("maxWager"), evaluations)
+    if not selected_action:
+        return {
+            **base,
+            "status": "missing_poll_data",
+            "recommended_option": "",
+            "recommended_amount": 0,
+            "stake_fraction_of_max": 0.0,
+            "recommended_ev_percent": "",
+            "fair_prob": "",
+            "fair_odds": "",
+            "consensus_fair_line": "",
+            "matched_books": 0,
+            "books": "",
+            "notes": "NBA Draft yes/no poll options could not be evaluated.",
+        }
+
+    selected_eval = selected_action.get("evaluation") or {}
+    selected_fair_prob = float(_evaluation_value(selected_eval, "fair_prob") or 0.0)
+    book_fields = _book_outcome_fields(
+        [
+            item.get("book_outcome") or {}
+            for item in evaluations
+            if isinstance(item.get("book_outcome"), dict)
+        ]
+    )
+    if sportsbook_match is not None:
+        source_lines = str(sportsbook_match.get("source_line") or "").strip()
+        notes = "Sportsbook NBA Draft market/proxy matched this yes/no poll. Selection is the highest expected karma at 0 put."
+        matched_books = int(sportsbook_match.get("matched_books") or 0)
+        books = str(sportsbook_match.get("books") or "")
+        odds_updated_at = str(sportsbook_match.get("odds_updated_at") or "")
+    else:
+        total_count = sum(float(item.get("count") or 0.0) for item in evaluations)
+        source_lines = "\n".join(
+            (
+                f"{item.get('label')}: {int(float(item.get('count') or 0))} Real votes "
+                f"-> {float(_evaluation_value(item.get('evaluation') or {}, 'fair_prob') or 0.0) * 100.0:.1f}%"
+            )
+            for item in evaluations
+        )
+        notes = (
+            "No matching NBA Draft sportsbook market was loaded; using Real poll consensus as a fixed-return proxy. "
+            "Selection is the highest expected karma at 0 put."
+        )
+        if total_count <= 0:
+            notes = (
+                "No Real vote counts were available for this NBA Draft poll; using equal probability across options. "
+                "Selection is the highest expected karma at 0 put."
+            )
+        matched_books = 0
+        books = ""
+        odds_updated_at = ""
+    return {
+        **base,
+        **book_fields,
+        "status": selected_action.get("status") or "pick",
+        "recommended_option": str(selected_action.get("label") or ""),
+        "recommended_amount": int(selected_action.get("amount") or 0),
+        "stake_fraction_of_max": float(selected_action.get("stake_fraction") or 0.0),
+        "recommended_ev_percent": round(float(_evaluation_value(selected_eval, "ev_percent") or 0.0), 4),
+        "fair_prob": round(selected_fair_prob, 6),
+        "fair_odds": int(_evaluation_value(selected_eval, "fair_odds") or probability_to_american(selected_fair_prob or 0.5)),
+        "consensus_fair_line": "",
+        "matched_books": matched_books,
+        "books": books,
+        "odds_updated_at": odds_updated_at,
+        "player_choices_json": "",
+        "option_choices_json": _option_choices_json(evaluations),
+        "source_lines": source_lines,
+        "notes": notes,
+    }
+
+
+def _recommend_nba_draft_poll(
+    entry: dict[str, Any],
+    markets: list[MarketRow],
+    sport: str,
+    *,
+    client: Any,
+) -> dict[str, Any]:
+    poll = entry.get("poll") or {}
+    post = entry.get("post") or {}
+    poll_kind = _poll_kind(poll.get("additionalInfo") or {}, poll=poll, post=post)
+    if poll_kind == "nba_draft_pick":
+        return _recommend_nba_draft_pick_poll(entry, markets, sport, client=client)
+    return _recommend_nba_draft_yes_no_poll(entry, sport, markets)
+
+
 def _strip_player_country(label: str) -> tuple[str, str]:
     text = str(label or "").strip()
     match = re.match(r"^(.*?)\s*\(([^)]{2,60})\)\s*$", text)
@@ -8161,14 +9270,14 @@ def _real_rating_lineup_lookup_by_name(client: Any, sport: str, *, season: str) 
     return lookup
 
 
-def _is_group_stage_draft_contest(entry: dict[str, Any], sport: str) -> bool:
+def _soccer_world_cup_draft_context(entry: dict[str, Any], sport: str) -> tuple[bool, str, list[dict[str, Any]]]:
     if str(sport or "").strip().lower() != "soccer":
-        return False
+        return False, "", []
     game = entry.get("game") or {}
     home_team = str(game.get("homeTeamKey") or "").strip()
     away_team = str(game.get("awayTeamKey") or "").strip()
     if home_team or away_team:
-        return False
+        return False, "", []
 
     post = entry.get("post") or {}
     content_nodes = ((post.get("content") or {}).get("nodes")) or []
@@ -8201,18 +9310,265 @@ def _is_group_stage_draft_contest(entry: dict[str, Any], sport: str) -> bool:
         )
     combined_text = normalize_text(" ".join(part for part in text_parts if part))
 
+    poll = entry.get("poll") or {}
+    contest_ids = {str(poll.get("id") or "").strip()}
+    contest_ids.update(
+        str(source.get("contestId") or source.get("id") or "").strip()
+        for source in additional_sources
+    )
     conference_values = {
         normalize_text(str(source.get("conference") or "")).replace(" ", "")
         for source in additional_sources
     }
+
+    is_known_world_cup_draft = bool(contest_ids & WORLD_CUP_DRAFT_CONTEST_IDS)
+    is_draft = "draft" in combined_text or "lineup" in combined_text or is_known_world_cup_draft
+    is_world_cup = (
+        is_known_world_cup_draft
+        or "wc" in conference_values
+        or "worldcup" in conference_values
+        or "world cup" in combined_text
+    )
+    return is_draft and is_world_cup, combined_text, additional_sources
+
+
+def _is_group_stage_draft_contest(entry: dict[str, Any], sport: str) -> bool:
+    is_world_cup_draft, combined_text, additional_sources = _soccer_world_cup_draft_context(entry, sport)
+    if not is_world_cup_draft:
+        return False
     day = next((str(source.get("day") or "").strip() for source in additional_sources if source.get("day")), "")
     end_day = next((str(source.get("endDay") or "").strip() for source in additional_sources if source.get("endDay")), "")
-
-    is_draft = "draft" in combined_text or "lineup" in combined_text
-    is_world_cup = "wc" in conference_values or "worldcup" in conference_values or "world cup" in combined_text
     is_group_stage = "group stage" in combined_text
+    is_knockout = any(token in combined_text for token in ("knockout", "knock out", "knockout round"))
     is_multi_day = bool(day and end_day and day != end_day)
-    return is_draft and is_world_cup and (is_group_stage or is_multi_day)
+    return is_group_stage or (is_multi_day and not is_knockout)
+
+
+def _is_knockout_round_draft_contest(entry: dict[str, Any], sport: str) -> bool:
+    is_world_cup_draft, combined_text, additional_sources = _soccer_world_cup_draft_context(entry, sport)
+    if not is_world_cup_draft:
+        return False
+    poll = entry.get("poll") or {}
+    contest_ids = {str(poll.get("id") or "").strip()}
+    contest_ids.update(
+        str(source.get("contestId") or source.get("id") or "").strip()
+        for source in additional_sources
+    )
+    contest_text = " ".join(str(source.get("contestType") or "") for source in additional_sources)
+    contest_text = normalize_text(f"{combined_text} {contest_text}")
+    return (
+        bool(contest_ids & WORLD_CUP_KNOCKOUT_ROUND_DRAFT_CONTEST_IDS)
+        or "knockout" in contest_text
+        or "knock out" in contest_text
+        or "knockout round" in contest_text
+    )
+
+
+def _world_cup_player_country_lookup(markets: list[MarketRow], *, sport: str) -> dict[str, dict[str, str]]:
+    lookup: dict[str, dict[str, str]] = {}
+    player_future_stats = set(GROUP_STAGE_DRAFT_MARKET_WEIGHTS) | {"goldenglove"}
+    for market in markets:
+        if market.sport != sport:
+            continue
+        raw = market.raw or {}
+        if normalize_text(str(raw.get("market_type") or "")).replace(" ", "") != "tournamentfuture":
+            continue
+        stat = normalize_stat(str(market.stat_key or raw.get("stat") or ""))
+        if stat not in player_future_stats:
+            continue
+        for outcome in _market_price_outcomes(market):
+            label = str(outcome.get("label") or outcome.get("key") or "").strip()
+            name, country = _strip_player_country(label)
+            team_key = normalize_team(country)
+            if not name or not team_key:
+                continue
+            for key in _player_name_match_keys(name):
+                lookup.setdefault(key, {"team_key": team_key, "team_label": country})
+    return lookup
+
+
+def _team_future_probabilities(markets: list[MarketRow], *, sport: str) -> dict[str, dict[str, Any]]:
+    teams: dict[str, dict[str, Any]] = {}
+    for market in markets:
+        if market.sport != sport:
+            continue
+        raw = market.raw or {}
+        if normalize_text(str(raw.get("market_type") or "")).replace(" ", "") != "tournamentfuture":
+            continue
+        stat = normalize_stat(str(market.stat_key or raw.get("stat") or ""))
+        stat_key = stat.replace("_", "")
+        if stat_key not in {"winner", *KNOCKOUT_DRAFT_DIRECT_REACH_STATS}:
+            continue
+        priced_outcomes: list[dict[str, Any]] = []
+        for outcome in _market_price_outcomes(market):
+            odds = _normalize_option_odds({"odds": outcome.get("odds")})
+            label = str(outcome.get("label") or outcome.get("key") or "").strip()
+            team_key = normalize_team(label)
+            if odds is None or not label or not team_key:
+                continue
+            implied = american_to_implied_prob(odds)
+            if implied <= 0:
+                continue
+            priced_outcomes.append(
+                {
+                    "label": label,
+                    "team_key": team_key,
+                    "odds": odds,
+                    "implied": implied,
+                }
+            )
+        implied_total = sum(float(item["implied"]) for item in priced_outcomes)
+        if implied_total <= 0:
+            continue
+        market_name = str(raw.get("provider_market_name") or raw.get("question") or stat_key).strip()
+        for outcome in priced_outcomes:
+            fair_prob = float(outcome["implied"]) / implied_total
+            team = teams.setdefault(
+                str(outcome["team_key"]),
+                {
+                    "team_key": str(outcome["team_key"]),
+                    "team_label": str(outcome["label"]),
+                    "probabilities": {},
+                    "prices": {},
+                    "books": set(),
+                    "updated_items": [],
+                    "source_lines": [],
+                },
+            )
+            team["probabilities"].setdefault(stat_key, []).append(fair_prob)
+            team["prices"].setdefault(stat_key, []).append(int(outcome["odds"]))
+            team["books"].add(str(market.book or ""))
+            team["updated_items"].append(type("_OddsItem", (), {"updated_at": market.updated_at})())
+            team["source_lines"].append(
+                f"{market_name} {_format_american(outcome['odds'])} ({fair_prob * 100.0:.1f}% devig)"
+            )
+
+    for team in teams.values():
+        probabilities = {
+            stat: sum(values) / len(values)
+            for stat, values in (team.get("probabilities") or {}).items()
+            if values
+        }
+        win_prob = max(0.000001, min(0.999999, float(probabilities.get("winner") or 0.0)))
+        reach_probs: dict[str, float] = {}
+        for stat_key, wins_needed in KNOCKOUT_DRAFT_DIRECT_REACH_STATS.items():
+            direct = probabilities.get(stat_key)
+            proxy = win_prob ** (wins_needed / float(KNOCKOUT_DRAFT_REMAINING_GAMES)) if win_prob > 0 else 0.0
+            reach_probs[stat_key] = max(float(direct or 0.0), proxy)
+        expected_games = 1.0 + sum(reach_probs.values())
+        expected_games = max(1.0, min(float(KNOCKOUT_DRAFT_REMAINING_GAMES), expected_games))
+        prices = team.get("prices") or {}
+        winner_prices = prices.get("winner") or []
+        team["probabilities"] = probabilities
+        team["reach_probabilities"] = reach_probs
+        team["winner_prob"] = probabilities.get("winner", 0.0)
+        team["expected_games"] = expected_games
+        team["sportsbook_odds"] = winner_prices[0] if winner_prices else ""
+        team["books"] = " | ".join(sorted(book for book in team.get("books") or [] if book))
+        team["odds_updated_at"] = _latest_odds_updated_at(team.get("updated_items") or [])
+    return teams
+
+
+def _knockout_round_draft_candidates(
+    markets: list[MarketRow],
+    *,
+    sport: str,
+    client: Any,
+    season: str,
+) -> list[dict[str, Any]]:
+    team_futures = _team_future_probabilities(markets, sport=sport)
+    if not team_futures:
+        return []
+    country_lookup = _world_cup_player_country_lookup(markets, sport=sport)
+    candidates_by_key: dict[str, dict[str, Any]] = {}
+    for record in _search_rating_lineup_players(client, sport, season=season):
+        if not isinstance(record, dict):
+            continue
+        if is_unavailable_or_questionable_record(record):
+            continue
+        selection = _player_candidate_label(record) or player_full_name(record)
+        if not selection:
+            continue
+        team_info = None
+        team_key = ""
+        for candidate_team_key in sorted(_record_team_keys(record)):
+            if candidate_team_key in team_futures:
+                team_key = candidate_team_key
+                team_info = team_futures[candidate_team_key]
+                break
+        if team_info is None:
+            for name_key in _player_name_match_keys(selection):
+                country = country_lookup.get(name_key)
+                if country and country.get("team_key") in team_futures:
+                    team_key = str(country.get("team_key") or "")
+                    team_info = team_futures[team_key]
+                    break
+        if team_info is None:
+            continue
+
+        primary_rank = _positive_rank(
+            record.get("primaryRanking"),
+            fallback=_positive_rank(record.get("alltimeRanking"), fallback=999999.0),
+        )
+        base_rating = _record_primary_value(record)
+        rating_source = "Real rating"
+        if base_rating <= 0:
+            base_rating = _record_rating_weight(record)
+            rating_source = "Real rank weight"
+        if base_rating <= 0:
+            continue
+        multiplier_bonus = safe_float(record.get("multiplierBonus", 0))
+        multiplier_factor = max(0.0, 1.0 + multiplier_bonus) if 0 < multiplier_bonus < 5 else 1.0
+        expected_games = float(team_info.get("expected_games") or 1.0)
+        score = base_rating * multiplier_factor * expected_games
+        player_key = str(record.get("id") or "").strip() or (
+            normalize_player_name(selection).replace(" ", "") + f"|{team_key}"
+        )
+        candidate = {
+            "selection": selection,
+            "team_key": team_key,
+            "team_label": str(team_info.get("team_label") or team_key.upper()),
+            "score": score,
+            "base_rating": base_rating,
+            "rating_source": rating_source,
+            "real_rank": primary_rank,
+            "multiplier_bonus": multiplier_bonus,
+            "multiplier_factor": multiplier_factor,
+            "expected_games": expected_games,
+            "winner_prob": float(team_info.get("winner_prob") or 0.0),
+            "sportsbook_odds": team_info.get("sportsbook_odds") or "",
+            "books": team_info.get("books") or "",
+            "matched_books": len([book for book in str(team_info.get("books") or "").split("|") if book.strip()]),
+            "odds_updated_at": team_info.get("odds_updated_at") or "",
+            "team_source_lines": team_info.get("source_lines") or [],
+        }
+        existing = candidates_by_key.get(player_key)
+        if existing is None or float(candidate["score"]) > float(existing.get("score") or 0.0):
+            candidates_by_key[player_key] = candidate
+
+    ranked = [candidate for candidate in candidates_by_key.values() if float(candidate.get("score") or 0.0) > 0]
+    total_score = sum(float(candidate.get("score") or 0.0) for candidate in ranked)
+    for candidate in ranked:
+        score = float(candidate.get("score") or 0.0)
+        fair_prob = score / total_score if total_score > 0 else 0.0
+        candidate["fair_prob"] = fair_prob
+        candidate["fair_odds"] = probability_to_american(fair_prob) if fair_prob > 0 else ""
+        candidate["source_line"] = (
+            f"{candidate.get('selection')} ({candidate.get('team_label')}): "
+            f"{candidate.get('rating_source')} {float(candidate.get('base_rating') or 0.0):.2f} "
+            f"* Real boost {float(candidate.get('multiplier_factor') or 1.0):.2f}x "
+            f"* expected KO games {float(candidate.get('expected_games') or 0.0):.2f} "
+            f"= {score:.2f}; "
+            + "; ".join(str(line) for line in (candidate.get("team_source_lines") or [])[:2])
+        )
+    ranked.sort(
+        key=lambda item: (
+            -float(item.get("score") or 0.0),
+            float(item.get("real_rank") or 999999.0),
+            str(item.get("selection") or ""),
+        )
+    )
+    return ranked
 
 
 def _group_stage_draft_candidates(
@@ -8492,6 +9848,123 @@ def _build_group_stage_draft_contest_rankings(
                 "score blends Golden Boot, assist leader, Golden Ball, and Young Player odds, "
                 "then applies the Real boost multiplier when available. Selections are ranked by "
                 "boost-adjusted devigged futures probability and Real availability/rank tiebreakers."
+            ),
+            "option_choices_json": _tournament_choices_json(candidates),
+            **option_fields,
+            **sportsbook_fields,
+        }
+    return rankings
+
+
+def _build_knockout_round_draft_contest_rankings(
+    entries: list[dict[str, Any]],
+    markets: list[MarketRow],
+    *,
+    sport: str,
+    day: str,
+    client: Any,
+) -> dict[str, dict[str, Any]]:
+    sport_wide_entries = [entry for entry in entries if _is_knockout_round_draft_contest(entry, sport)]
+    if not sport_wide_entries:
+        return {}
+    season = str(day or "")[:4] or "2026"
+    candidates = _knockout_round_draft_candidates(markets, sport=sport, client=client, season=season)
+    if not candidates:
+        return {
+            str((entry.get("post") or {}).get("id") or ""): {
+                "status": "no_market",
+                "recommended_option": "",
+                "lineup_players": "",
+                "lineup_cutoff_gap": "",
+                "lineup_min_rank_gap": "",
+                "lineup_avg_rank_gap": "",
+                "lineup_top5_total": "",
+                "lineup_rank": "",
+                "lineup_projection_site": "World Cup team futures + Real rating",
+                "lineup_candidate_count": 0,
+                "notes": "No World Cup team futures or Real rating lineup candidates were available for the knockout draft.",
+            }
+            for entry in sport_wide_entries
+            if str((entry.get("post") or {}).get("id") or "")
+        }
+
+    rankings: dict[str, dict[str, Any]] = {}
+    for entry_index, entry in enumerate(sport_wide_entries):
+        post = entry.get("post") or {}
+        poll = entry.get("poll") or {}
+        additional = poll.get("additionalInfo") or {}
+        post_id = str(post.get("id") or "").strip()
+        if not post_id:
+            continue
+        try:
+            lineup_size = int(float(additional.get("lineupSize") or 5))
+        except Exception:
+            lineup_size = 5
+        lineup_size = max(1, lineup_size)
+        top_players = candidates[:lineup_size]
+        next_score = float(candidates[lineup_size].get("score") or 0.0) if len(candidates) > lineup_size else 0.0
+        scores = [float(candidate.get("score") or 0.0) for candidate in top_players]
+        adjacent_gaps = [scores[index] - scores[index + 1] for index in range(len(scores) - 1)]
+        lineup_players = " > ".join(
+            f"{index + 1}. {candidate.get('selection')}"
+            for index, candidate in enumerate(top_players)
+        )
+        display_candidates = candidates[:5]
+        option_fields = _option_fields([{"label": candidate.get("selection") or ""} for candidate in display_candidates])
+        sportsbook_fields = _book_outcome_fields(
+            [
+                {
+                    "label": (
+                        f"{candidate.get('selection')}"
+                        f" ({candidate.get('team_label')})"
+                    ),
+                    "odds": candidate.get("sportsbook_odds") if candidate.get("sportsbook_odds") not in ("", None) else "",
+                }
+                for candidate in display_candidates
+            ]
+        )
+        rankings[post_id] = {
+            "status": "pick",
+            "recommended_option": lineup_players,
+            "lineup_players": lineup_players,
+            "lineup_cutoff_gap": round((scores[-1] - next_score), 4) if scores else "",
+            "lineup_min_rank_gap": round(min(adjacent_gaps), 4) if adjacent_gaps else 0.0,
+            "lineup_avg_rank_gap": round((sum(adjacent_gaps) / len(adjacent_gaps)), 4) if adjacent_gaps else 0.0,
+            "lineup_top5_total": round(sum(scores), 4),
+            "lineup_rank": entry_index + 1,
+            "lineup_projection_site": "World Cup team futures + Real rating",
+            "lineup_candidate_count": len(candidates),
+            "fair_prob": round(sum(float(candidate.get("fair_prob") or 0.0) for candidate in top_players), 6),
+            "fair_odds": probability_to_american(
+                max(0.0001, min(0.9999, sum(float(candidate.get("fair_prob") or 0.0) for candidate in top_players)))
+            ),
+            "matched_books": max((int(candidate.get("matched_books") or 0) for candidate in top_players), default=0),
+            "books": " | ".join(
+                sorted(
+                    {
+                        book.strip()
+                        for candidate in top_players
+                        for book in str(candidate.get("books") or "").split("|")
+                        if book.strip()
+                    }
+                )
+            ),
+            "odds_updated_at": _latest_odds_updated_at(
+                [
+                    type("_OddsItem", (), {"updated_at": candidate.get("odds_updated_at")})()
+                    for candidate in top_players
+                ]
+            ),
+            "source_lines": "\n".join(
+                str(candidate.get("source_line") or "")
+                for candidate in candidates[:12]
+                if candidate.get("source_line")
+            ),
+            "notes": (
+                "Sport-wide knockout draft fallback from Real rating lineup players; "
+                "score = previous Real rating/rank weight * Real boost multiplier * "
+                "expected remaining knockout games. Expected games use direct World Cup "
+                "reach futures when available, otherwise a title-odds survival proxy."
             ),
             "option_choices_json": _tournament_choices_json(candidates),
             **option_fields,
@@ -8796,6 +10269,21 @@ def build_recommendations(
             for post_id, recommendation in group_stage_draft_recommendations.items():
                 if recommendation:
                     contest_recommendations[post_id] = recommendation
+            try:
+                knockout_round_draft_recommendations = _build_knockout_round_draft_contest_rankings(
+                    contest_entries,
+                    markets,
+                    sport=sport,
+                    day=resolved_day,
+                    client=client,
+                )
+            except Exception as exc:
+                knockout_round_draft_recommendations = {}
+                if not contest_error:
+                    contest_error = f"World Cup knockout draft load failed: {exc}"
+            for post_id, recommendation in knockout_round_draft_recommendations.items():
+                if recommendation:
+                    contest_recommendations[post_id] = recommendation
     if sport in {"soccer", "golf"} and isinstance(contest_projection_summary, dict):
         projection_records = contest_projection_summary.get("records")
         if isinstance(projection_records, list) and projection_records:
@@ -8844,6 +10332,13 @@ def build_recommendations(
                 sport,
                 day=resolved_day,
                 markets=markets,
+            )
+        elif poll_kind in NBA_DRAFT_POLL_KINDS:
+            recommendation = _recommend_nba_draft_poll(
+                entry,
+                markets,
+                sport,
+                client=client,
             )
         elif poll_kind in TOURNAMENT_POLL_KINDS:
             recommendation = _recommend_tournament_poll(

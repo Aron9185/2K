@@ -29,7 +29,7 @@ Current organized behavior/spec:
 - `predictions.py`
   - inspects Real prediction markets, buy/sell order tickets, and position pages
 - `recommend_prediction_markets.py`
-  - matches current Real prediction markets against sportsbook consensus and calculates buy EV in rax
+  - matches current Real prediction markets against sportsbook consensus and calculates buy EV in karma
 - `recommend_prediction_positions.py`
   - compares current open Real prediction positions against sportsbook fair value and suggests hold vs cashout
 - `render_prediction_sheet.py`

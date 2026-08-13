@@ -19,7 +19,7 @@ DEFAULT_PROFILE_DIR = str(
 )
 DEFAULT_ENV_OUTPUT = BASE_DIR / ".realsports_env.ps1"
 DEFAULT_TIMEOUT = 600
-REALSPORTS_URL = "https://realsports.io/"
+REALSPORTS_URL = "https://web.realapp.com/"
 API_HOST_MARKERS = ("web.realsports.io", "web.realapp.com")
 CHROME_CANDIDATES = (
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -92,6 +92,7 @@ def launch_browser(browser_path, port, profile_dir):
         str(browser_path),
         f"--remote-debugging-port={port}",
         "--remote-debugging-address=127.0.0.1",
+        f"--remote-allow-origins=http://127.0.0.1:{port}",
         f"--user-data-dir={profile_dir}",
         "--no-first-run",
         "--no-default-browser-check",
@@ -119,7 +120,7 @@ def choose_target(port):
     pages = [target for target in targets if target.get("type") == "page"]
     for target in pages:
         url = (target.get("url") or "").lower()
-        if "realsports.io" in url:
+        if "realapp.com" in url or "realsports.io" in url:
             return target
     return open_realsports_tab(port)
 
@@ -157,7 +158,7 @@ def extract_session_from_headers(headers):
 
 class CdpConnection:
     def __init__(self, websocket_url):
-        self.ws = websocket.create_connection(websocket_url, timeout=1)
+        self.ws = websocket.create_connection(websocket_url, timeout=1, suppress_origin=True)
         self.message_id = 0
 
     def send(self, method, params=None):
@@ -188,6 +189,7 @@ def capture_realsports_session(target, timeout):
     try:
         connection.send("Network.enable")
         connection.send("Page.enable")
+        connection.send("Page.reload", {"ignoreCache": True})
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:
@@ -218,6 +220,8 @@ def write_env_file(path, session_data):
         f"$env:REALSPORTS_REAL_VERSION='{session_data['real_version']}'",
         f"$env:REALSPORTS_USER_AGENT='{session_data['user_agent']}'",
         f"$env:REALSPORTS_DEVICE_NAME='{session_data['device_name']}'",
+        f"$env:REALSPORTS_ORIGIN='{session_data.get('origin') or 'https://web.realapp.com'}'",
+        f"$env:REALSPORTS_REFERER='{session_data.get('referer') or 'https://web.realapp.com/'}'",
     ]
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)

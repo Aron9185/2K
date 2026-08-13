@@ -72,14 +72,14 @@ def _table_escape(value: object) -> str:
     return text.replace("|", "\\|")
 
 
-def _format_signed_rax(value: str) -> str:
+def _format_signed_karma(value: str) -> str:
     number = _safe_float(value)
     if number is None:
         return ""
     return f"{number:+.2f}"
 
 
-def _format_rax(value: str) -> str:
+def _format_karma(value: str) -> str:
     number = _safe_float(value)
     if number is None:
         return ""
@@ -89,7 +89,7 @@ def _format_rax(value: str) -> str:
 def _summary_line(rows: list[dict[str, str]]) -> str:
     cashout_total = sum(_safe_float(str(row.get("cashout_now") or "")) or 0.0 for row in rows)
     hold_total = sum(_safe_float(str(row.get("hold_fair_value") or "")) or 0.0 for row in rows)
-    return f"**Summary:** {len(rows)} open positions, current cashout {cashout_total:.2f} rax, fair hold value {hold_total:.2f} rax."
+    return f"**Summary:** {len(rows)} open positions, current cashout {cashout_total:.2f} karma, fair hold value {hold_total:.2f} karma."
 
 
 def _row_sort_key(row: dict[str, str]) -> tuple[datetime, str, str, int, str]:
@@ -179,11 +179,11 @@ def render_prediction_positions_sheet(rows: list[dict[str, str]]) -> str:
         for row in game_rows:
             cells = [
                 _market_cell(row),
-                _format_rax(str(row.get("cashout_now") or "")),
-                _format_rax(str(row.get("hold_fair_value") or "")),
-                _format_signed_rax(str(row.get("hold_vs_cashout_ev") or "")),
-                _format_signed_rax(str(row.get("hold_total_ev") or "")),
-                _format_signed_rax(str(row.get("cashout_total_pl") or "")),
+                _format_karma(str(row.get("cashout_now") or "")),
+                _format_karma(str(row.get("hold_fair_value") or "")),
+                _format_signed_karma(str(row.get("hold_vs_cashout_ev") or "")),
+                _format_signed_karma(str(row.get("hold_total_ev") or "")),
+                _format_signed_karma(str(row.get("cashout_total_pl") or "")),
                 _action_cell(row),
             ]
             sections.append("| " + " | ".join(_table_escape(cell) for cell in cells) + " |")

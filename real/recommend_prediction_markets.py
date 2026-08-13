@@ -73,7 +73,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Fetch current Real prediction markets for one sport, match them to the "
-            "sportsbook consensus, and calculate buy EV in rax."
+            "sportsbook consensus, and calculate buy EV in karma."
         )
     )
     parser.add_argument("--sport", default="mlb", help="Sport key such as mlb.")

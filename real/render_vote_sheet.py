@@ -63,6 +63,8 @@ ZERO_COST_ACTION_POLL_KINDS = {
     "first_basket",
     "golf_leaderboard",
     "tournament_player_award",
+    "nba_draft_pick",
+    "nba_draft_yes_no",
 }
 ZERO_COST_PICK_DISPLAY_KINDS = {
     "anytime_play",
@@ -73,6 +75,7 @@ ZERO_COST_PICK_DISPLAY_KINDS = {
     "tournament_champion",
     "tournament_group_winner",
     "tournament_player_award",
+    "nba_draft_pick",
 }
 
 STATUS_ORDER = {
@@ -416,10 +419,7 @@ def _expected_profit(fair_prob: float, real_odds: int, amount: int) -> float:
 
 def _action_ev_text(fair_prob: float, real_odds: int, amount: int) -> str:
     expected_profit = _expected_profit(fair_prob, real_odds, amount)
-    if amount <= 0:
-        return _format_signed_number(expected_profit, suffix=" Rax")
-    ev_percent = (expected_profit / max(float(amount), 1.0)) * 100.0
-    return _format_signed_percent(str(round(ev_percent, 4)))
+    return _format_signed_number(expected_profit, suffix=" karma")
 
 
 def _action_payload_token(payload: dict[str, object]) -> str:
@@ -602,8 +602,8 @@ def _choice_books_label(value: object) -> str:
 def _player_choice_sportsbook_text(choice: dict[str, object], fallback: str) -> str:
     name = _compact_label(str(choice.get("selection") or ""))
     odds = _format_american(str(choice.get("sportsbook_odds") or ""))
-    if not name and not odds:
-        return fallback
+    if not odds:
+        return ""
     text = " ".join(part for part in (name, odds) if part)
     books = _choice_books_label(choice.get("books"))
     return f"{books}: {text}" if books and text else text or fallback
@@ -769,6 +769,36 @@ def _best_action(row: dict[str, str]) -> dict[str, object]:
         "fair_odds": fair_odds,
         "expected_profit": None,
     }
+
+
+def _selected_action_expected_profit(row: dict[str, str]) -> float | None:
+    status = str(row.get("status") or "").strip().lower()
+    if status not in {"bet", "pick"}:
+        return None
+    if str(row.get("poll_kind") or "").strip().lower() == "daily_pool":
+        return None
+    options = _option_slots(row)
+    if len(options) < 2:
+        return None
+    selected_label = str(row.get("recommended_option") or "").strip()
+    selected_slot = _matching_slot(options, selected_label)
+    if not selected_slot:
+        return None
+    fair_probs = _action_fair_probabilities(row, options)
+    fair_prob = fair_probs.get(selected_slot)
+    if fair_prob is None:
+        return None
+    selected_option = next(
+        (option for option in options if option.get("slot") == selected_slot),
+        None,
+    )
+    if not selected_option:
+        return None
+    real_odds = _safe_int(str(selected_option.get("odds") or ""))
+    if real_odds is None:
+        return None
+    amount = _safe_int(str(row.get("recommended_amount") or "")) or 0
+    return _expected_profit(float(fair_prob), real_odds, amount)
 
 
 def _selection_put_text(row: dict[str, str], *, include_action_token: bool = True) -> str:
@@ -1178,7 +1208,7 @@ def _table_row(row: dict[str, str]) -> str:
         _selected_real_odds(row),
         _fair_value_text(row),
         _selected_sportsbook_odds(row),
-        _format_signed_percent(str(row.get("recommended_ev_percent") or "")),
+        _compact_ev_text(row),
         _books_text(row),
         _reason_text(row),
     ]
@@ -1186,6 +1216,9 @@ def _table_row(row: dict[str, str]) -> str:
 
 
 def _compact_ev_text(row: dict[str, str]) -> str:
+    selected_ev_karma = _selected_action_expected_profit(row)
+    if selected_ev_karma is not None:
+        return _format_signed_number(selected_ev_karma, suffix=" karma")
     value = _format_signed_percent(str(row.get("recommended_ev_percent") or ""))
     if value:
         return value
@@ -1521,6 +1554,25 @@ def _future_game_pairs(
     return pairs
 
 
+def _is_sport_wide_daily_lineup_target(row: dict[str, str]) -> bool:
+    content_text = str(row.get("content_text") or "").strip().lower()
+    custom_label = str(row.get("game_label") or "").strip().lower()
+    game_id = str(row.get("game_id") or "").strip().lower()
+    is_contest = str(row.get("poll_kind") or "").strip().lower() == "contest"
+    return (
+        is_contest
+        and "draft your sport lineup" in content_text
+        and (game_id.startswith("contest:") or custom_label in {"", "lineup", "contest"})
+    )
+
+
+def _daily_lineup_post_target(rows: list[dict[str, str]]) -> dict[str, str] | None:
+    targets = [row for row in _lineup_rows(rows) if _is_sport_wide_daily_lineup_target(row)]
+    if not targets:
+        return None
+    return sorted(targets, key=_lineup_rank_sort)[0]
+
+
 def _render_daily_lineup_section(
     *,
     sport: str,
@@ -1572,9 +1624,15 @@ def _render_daily_lineup_section(
         f"| Rank | Player | Team | Pos | Game | {value_header} | Adj Real Rating | Mult | Salary |",
         "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
-    for row in ordered_rows:
+    post_target = _daily_lineup_post_target(game_rows or [])
+    for index, row in enumerate(ordered_rows):
+        rank_cell = str(row.get("Lineup_Rank") or "")
+        if index == 0 and post_target:
+            row_meta = _row_meta_token(post_target)
+            if row_meta:
+                rank_cell = f"{rank_cell} {row_meta}".strip()
         cells = [
-            str(row.get("Lineup_Rank") or ""),
+            rank_cell,
             str(row.get("Name") or "").strip(),
             str(row.get("Team") or "").strip(),
             str(row.get("Position") or "").strip(),
@@ -1602,11 +1660,32 @@ def _is_group_stage_draft_lineup_row(row: dict[str, str]) -> bool:
     )
 
 
+def _is_knockout_round_draft_lineup_row(row: dict[str, str]) -> bool:
+    content_text = str(row.get("content_text") or "").strip().lower()
+    custom_label = str(row.get("game_label") or "").strip().lower()
+    game_id = str(row.get("game_id") or "").strip().lower()
+    poll_id = str(row.get("poll_id") or "").strip()
+    is_contest = str(row.get("poll_kind") or "").strip().lower() == "contest"
+    return (
+        is_contest
+        and (game_id.startswith("contest:") or custom_label in {"", "lineup", "contest"})
+        and (
+            poll_id == "1957"
+            or (
+                "world cup" in content_text
+                and ("knockout" in content_text or "knock out" in content_text)
+            )
+        )
+    )
+
+
 def _lineup_game_label(row: dict[str, str]) -> str:
     custom_label = str(row.get("game_label") or "").strip()
     content_text = str(row.get("content_text") or "").strip()
     if _is_group_stage_draft_lineup_row(row):
         matchup = "World Cup Group Stage Draft"
+    elif _is_knockout_round_draft_lineup_row(row):
+        matchup = "World Cup Knockout Round Draft"
     elif custom_label:
         matchup = custom_label
     else:
@@ -1652,8 +1731,12 @@ def _render_lineup_rows_section(
         "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for row in ordered_rows:
+        rank_cell = str(row.get("lineup_rank") or "")
+        row_meta = _row_meta_token(row)
+        if row_meta:
+            rank_cell = f"{rank_cell} {row_meta}".strip()
         cells = [
-            str(row.get("lineup_rank") or ""),
+            rank_cell,
             _lineup_game_label(row),
             _lineup_action(row),
             _lineup_top_five_text(row),
@@ -1685,12 +1768,31 @@ def _render_group_stage_lineup_section(rows: list[dict[str, str]]) -> list[str]:
     )
 
 
+def _render_knockout_round_lineup_section(rows: list[dict[str, str]]) -> list[str]:
+    knockout_rows = [
+        row
+        for row in _lineup_rows(rows)
+        if str(row.get("status") or "").strip().lower() == "pick"
+        and _is_knockout_round_draft_lineup_row(row)
+    ]
+    return _render_lineup_rows_section(
+        heading="Knockout Round Draft Lineup",
+        intro=(
+            "This is the sport-wide World Cup knockout-round player rating contest, "
+            "separate from the Daily Lineup section below. Copy the five names in order."
+        ),
+        rows=knockout_rows,
+        label_column="Contest",
+    )
+
+
 def _render_lineup_section(rows: list[dict[str, str]]) -> list[str]:
     lineup_rows = [
         row
         for row in _lineup_rows(rows)
         if str(row.get("status") or "").strip().lower() == "pick"
         and not _is_group_stage_draft_lineup_row(row)
+        and not _is_knockout_round_draft_lineup_row(row)
     ]
     return _render_lineup_rows_section(
         heading="Daily Draft Lineup Contests",
@@ -1723,7 +1825,7 @@ def _render_predictions_section(
         "",
         prediction_summary_line(market_rows, position_rows),
         "",
-        "`Selection+Rax` is the side plus the recommended Real prediction buy size. Open positions show the current hold-vs-cashout view.",
+        "`Selection+Karma` is the side plus the recommended Real prediction buy size. Open positions show the current hold-vs-cashout view.",
         "",
     ]
     sections.extend(render_prediction_sections(market_rows, position_rows, heading_level=3))
@@ -1923,6 +2025,7 @@ def render_vote_sheet(
         game_rows=rows,
     )
     group_stage_lineup_section = _render_group_stage_lineup_section(rows)
+    knockout_round_lineup_section = _render_knockout_round_lineup_section(rows)
     lineup_section = _render_lineup_section(rows)
     predictions_section = _render_predictions_section(
         sport=sport_key,
@@ -1939,10 +2042,13 @@ def render_vote_sheet(
         _summary_line(rows),
         "",
         "`Selection+Put` is the side plus the amount to enter, for example `No0`, `No50`, `Yes0`, or `Yes50`. Zero-cost pick rows just show the selection.",
+        "`EV` is expected karma for selectable 0/max actions, using a 10 karma payout for 0-put wins.",
         "",
     ]
     if group_stage_lineup_section:
         sections.extend(group_stage_lineup_section)
+    if knockout_round_lineup_section:
+        sections.extend(knockout_round_lineup_section)
     if daily_lineup_section:
         sections.extend(daily_lineup_section)
     if lineup_section:

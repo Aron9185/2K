@@ -253,6 +253,29 @@ def _is_golf_best_score_text(text: str) -> bool:
     )
 
 
+def _is_nba_draft_player_pick_text(text: str) -> bool:
+    normalized = normalize_text(text)
+    return bool(
+        re.search(r"\b(?:pick\s+)?[0-9]+(?:st|nd|rd|th)\s+pick\b", normalized)
+        or re.search(r"\bpick\s+[0-9]+\b", normalized)
+        or re.search(r"\bplayer\s+to\s+get\s+drafted\b", normalized)
+    )
+
+
+def _is_nba_draft_poll_text(sport_key: str, combined_text: str, entity_type: str) -> bool:
+    if sport_key not in {"nba", "ncaam"}:
+        return False
+    normalized = normalize_text(combined_text)
+    if entity_type == "player" and _is_nba_draft_player_pick_text(normalized):
+        return True
+    return bool(
+        "draft" in normalized
+        or "picked in r1" in normalized
+        or "get picked in r1" in normalized
+        or re.search(r"\bgo\s+[0-9]+(?:st|nd|rd|th)?\s+or\s+earlier\b", normalized)
+    )
+
+
 def _normalize_poll_kind(post: dict[str, Any], poll: dict[str, Any]) -> str:
     additional = poll.get("additionalInfo") or {}
     post_additional = post.get("additionalInfo") or {}
@@ -274,6 +297,10 @@ def _normalize_poll_kind(post: dict[str, Any], poll: dict[str, Any]) -> str:
             return "golf_leaderboard"
     if poll_type == "player" and sport_key == "golf" and _is_golf_best_score_text(combined_text):
         return "golf_leaderboard"
+    if poll_type == "generalpoll":
+        entity_type = normalize_text(str(additional.get("entityType") or ""))
+        if _is_nba_draft_poll_text(sport_key, combined_text, entity_type):
+            return "nba_draft_pick" if entity_type == "player" or _is_nba_draft_player_pick_text(combined_text) else "nba_draft_yes_no"
     if additional.get("isOverUnder") or post_additional.get("isOverUnder"):
         return "player_over_under" if poll_type == "player" else "game_total"
     if poll_type == "gamewinner" or additional.get("isPickWinner"):

@@ -56,6 +56,8 @@ ROTOWIRE_SPORT_SLUGS = {
 REAL_ONLY_LINEUP_SPORTS = {"ncaabb"}
 SPORT_DEFAULT_SEASONS = {
     "ncaabb": "2026",
+    "ncaaf": "2026",
+    "nfl": "2026",
 }
 REAL_LINEUP_SEARCH_QUERIES = [""] + list("abcdefghijklmnopqrstuvwxyz")
 REAL_RATING_FALLBACK_SITE = "Real ratings"

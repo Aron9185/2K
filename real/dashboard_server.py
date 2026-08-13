@@ -49,6 +49,22 @@ DOC_SPECS = [
         "fallback_glob": "ncaabb_v*.md",
     },
     {
+        "id": "nfl-vote",
+        "category": "Vote Sheets",
+        "label": "NFL Vote Sheet",
+        "sport": "nfl",
+        "stable_path": DASHBOARD_DIR / "nfl.md",
+        "fallback_glob": "nfl_v*.md",
+    },
+    {
+        "id": "cfb-vote",
+        "category": "Vote Sheets",
+        "label": "CFB Vote Sheet",
+        "sport": "ncaaf",
+        "stable_path": DASHBOARD_DIR / "ncaaf.md",
+        "fallback_glob": "ncaaf_v*.md",
+    },
+    {
         "id": "nba-vote",
         "category": "Vote Sheets",
         "label": "NBA Vote Sheet",
@@ -151,7 +167,7 @@ CATEGORY_ORDER = {
     "Live": 1,
     "Predictions": 2,
 }
-REFRESHABLE_VOTE_SPORTS = {"mlb", "ncaabb", "nba", "nhl", "wnba", "soccer", "golf", "ufc"}
+REFRESHABLE_VOTE_SPORTS = {"mlb", "ncaabb", "nfl", "ncaaf", "nba", "nhl", "wnba", "soccer", "golf", "ufc"}
 REFRESHABLE_PREDICTION_SPORTS = {"mlb", "nba", "nhl", "soccer"}
 REFRESHABLE_TARGETS = {"live-polls"}
 REFRESH_TARGET_ALIASES = {
@@ -165,6 +181,9 @@ SPORT_LABELS = {
     "mlb": "MLB",
     "cws": "CWS",
     "ncaabb": "CWS",
+    "cfb": "CFB",
+    "ncaaf": "CFB",
+    "nfl": "NFL",
     "nba": "NBA",
     "nhl": "NHL",
     "wnba": "WNBA",
@@ -174,6 +193,9 @@ SPORT_LABELS = {
 }
 SPORT_ALIASES = {
     "cws": "ncaabb",
+    "cfb": "ncaaf",
+    "college-football": "ncaaf",
+    "collegefootball": "ncaaf",
 }
 
 
@@ -204,7 +226,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--sports",
-        default="mlb,ncaabb,nba,nhl,wnba,golf,ufc",
+        default="mlb,ncaabb,nfl,ncaaf,nba,nhl,wnba,golf,ufc",
         help="Comma-separated sports passed through to refresh_dashboard_data.py.",
     )
     parser.add_argument(

@@ -47,6 +47,9 @@ DEFAULT_OUTPUT = BASE_DIR / "live_poll_vote_recommendations.csv"
 DEFAULT_HISTORY = BASE_DIR / "live_poll_vote_history.jsonl"
 SPORT_ALIASES = {
     "cws": "ncaabb",
+    "cfb": "ncaaf",
+    "college-football": "ncaaf",
+    "collegefootball": "ncaaf",
 }
 
 SUPPORTED_POLL_KINDS = {

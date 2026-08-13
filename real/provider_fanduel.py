@@ -25,6 +25,7 @@ SPORT_TO_PAGE = {
     "wnba": "BASKETBALL",
     "nhl": "ICE_HOCKEY",
     "nfl": "AMERICAN_FOOTBALL",
+    "ncaaf": "AMERICAN_FOOTBALL",
     "soccer": "FOOTBALL",
     "ufc": "MMA",
 }
@@ -36,6 +37,7 @@ SPORT_TO_HOST = {
     "wnba": "https://sbapi.nj.sportsbook.fanduel.com",
     "nhl": "https://sbapi.nj.sportsbook.fanduel.com",
     "nfl": "https://sbapi.nj.sportsbook.fanduel.com",
+    "ncaaf": "https://sbapi.nj.sportsbook.fanduel.com",
     "soccer": "https://sbapi.nj.sportsbook.fanduel.com",
     "ufc": "https://sbapi.nj.sportsbook.fanduel.com",
 }
@@ -52,6 +54,9 @@ DEFAULT_QUERY_PARAMS = {
 
 SPORT_ALIASES = {
     "cws": "ncaabb",
+    "cfb": "ncaaf",
+    "college-football": "ncaaf",
+    "collegefootball": "ncaaf",
 }
 
 FANDUEL_API_KEY = DEFAULT_QUERY_PARAMS["_ak"]
@@ -143,7 +148,28 @@ FANDUEL_EVENT_TAB_KEYWORDS_BY_SPORT = {
         "period",
         "3rd period",
     ),
-    "nfl": ("quick bets", "live", "player props"),
+    "nfl": (
+        "quick bets",
+        "live",
+        "player props",
+        "passing",
+        "rushing",
+        "receiving",
+        "receptions",
+        "touchdown",
+        "touchdowns",
+    ),
+    "ncaaf": (
+        "quick bets",
+        "live",
+        "player props",
+        "passing",
+        "rushing",
+        "receiving",
+        "receptions",
+        "touchdown",
+        "touchdowns",
+    ),
     "ufc": (
         "popular",
         "same game",
@@ -160,6 +186,7 @@ FANDUEL_GAME_LINE_EVENT_TAB_KEYWORDS_BY_SPORT = {
     "wnba": ("quick bets", "live", "1st quarter", "quarter"),
     "nhl": ("quick bets", "live", "period", "3rd period"),
     "nfl": ("quick bets", "live"),
+    "ncaaf": ("quick bets", "live"),
     "ufc": ("popular",),
 }
 
@@ -216,6 +243,63 @@ STAT_ALIASES = {
     "takedowns": "takedowns",
     "total takedowns": "takedowns",
     "knockdowns": "knockdowns",
+    "passing yards": "passingyards",
+    "alt passing yards": "passingyards",
+    "player passing yards": "passingyards",
+    "pass yards": "passingyards",
+    "rushing yards": "rushingyards",
+    "alt rushing yards": "rushingyards",
+    "player rushing yards": "rushingyards",
+    "rush yards": "rushingyards",
+    "receiving yards": "receivingyards",
+    "alt receiving yards": "receivingyards",
+    "player receiving yards": "receivingyards",
+    "receiving + rushing yards": "offensiveyards",
+    "rushing + receiving yards": "offensiveyards",
+    "receiving+rushing yards": "offensiveyards",
+    "rushing+receiving yards": "offensiveyards",
+    "receiving+rushingyards": "offensiveyards",
+    "rushing+receivingyards": "offensiveyards",
+    "receivingrushingyards": "offensiveyards",
+    "rushingreceivingyards": "offensiveyards",
+    "offensive yards": "offensiveyards",
+    "offensiveyards": "offensiveyards",
+    "scrimmage yards": "offensiveyards",
+    "scrimmageyards": "offensiveyards",
+    "receptions": "receptions",
+    "alt receptions": "receptions",
+    "player receptions": "receptions",
+    "passing touchdowns": "passingtouchdowns",
+    "pass td": "passingtouchdowns",
+    "pass tds": "passingtouchdowns",
+    "touchdowns": "touchdowns",
+    "anytime touchdown scorer": "touchdowns",
+    "any time touchdown scorer": "touchdowns",
+    "td scorer": "touchdowns",
+    "passing completions": "completions",
+    "completions": "completions",
+    "passing attempts": "passingattempts",
+    "pass attempts": "passingattempts",
+    "interceptions": "interceptions",
+    "passing interceptions": "interceptions",
+    "sacks": "sacks",
+    "longest reception": "longestreception",
+    "longest rush": "longestrush",
+    "longest completion": "longestcompletion",
+}
+
+FOOTBALL_PLAYER_PROP_STATS = {
+    "offensiveyards",
+    "passingyards",
+    "rushingyards",
+    "receivingyards",
+    "receptions",
+    "touchdowns",
+    "passingtouchdowns",
+    "completions",
+    "passingattempts",
+    "interceptions",
+    "sacks",
 }
 
 LADDER_MARKET_MAP = (
@@ -585,6 +669,35 @@ def _team_name_in_market_name(
     return ""
 
 
+def _compact_team_prop_key(value: str) -> str:
+    return normalize_text(value).replace(" ", "")
+
+
+def _team_nickname_key(value: str) -> str:
+    parts = normalize_text(value).split()
+    return parts[-1] if parts else ""
+
+
+def _looks_like_team_prop_player_name(player_name: str, home_team: str, away_team: str) -> bool:
+    player_key = _compact_team_prop_key(player_name)
+    if not player_key:
+        return False
+    for team in (home_team, away_team):
+        team_key = _compact_team_prop_key(team)
+        team_alias = normalize_team(team)
+        nickname = _team_nickname_key(team)
+        compact_values = {team_key, team_alias}
+        if team_alias and nickname:
+            compact_values.add(f"{team_alias}{nickname}")
+        if player_key in compact_values:
+            return True
+        if nickname and player_key.endswith(nickname):
+            prefix = player_key[: -len(nickname)]
+            if 1 <= len(prefix) <= 4:
+                return True
+    return False
+
+
 def _is_over_label(value: str) -> bool:
     return bool(re.search(r"(?:^|\b)(?:1st\s+half\s+)?over\b", str(value or "").strip(), flags=re.IGNORECASE))
 
@@ -735,6 +848,14 @@ def _single_side_player_market(market_name: str, market_type_name: str) -> tuple
     ):
         return "goals", 0.5
     if (
+        market_type_key in {"ANY_TIME_TOUCHDOWN_SCORER", "ANYTIME_TOUCHDOWN_SCORER", "ANYTIME_TD_SCORER"}
+        or "any time touchdown scorer" in market_text
+        or "anytime touchdown scorer" in market_text
+        or "any time td scorer" in market_text
+        or "anytime td scorer" in market_text
+    ):
+        return "touchdowns", 0.5
+    if (
         market_type_key in {"ANYTIME_ASSIST", "PLAYER_TO_RECORD_AN_ASSIST"}
         or "anytime assist" in market_text
         or "any time assist" in market_text
@@ -755,9 +876,29 @@ def _single_side_player_market(market_name: str, market_type_name: str) -> tuple
         (r"PLAYER_TO_RECORD_([0-9]+)\+_HITS\+RUNS\+RBIS", "hitsrunsrbis"),
         (r"PLAYER_TO_RECORD_([0-9]+)\+_HITS_RUNS_RBIS", "hitsrunsrbis"),
         (r"PLAYER_TO_RECORD_([0-9]+)\+_SHOTS_ON_GOAL", "shots"),
+        (r"PLAYER_TO_RECORD_([0-9]+)\+_PASSING_YARDS", "passingyards"),
+        (r"PLAYER_TO_RECORD_([0-9]+)\+_RUSHING_YARDS", "rushingyards"),
+        (r"PLAYER_TO_RECORD_([0-9]+)\+_RECEIVING_YARDS", "receivingyards"),
+        (r"PLAYER_TO_RECORD_([0-9]+)\+_RECEIVING_RUSHING_YARDS", "offensiveyards"),
+        (r"PLAYER_TO_RECORD_([0-9]+)\+_RUSHING_RECEIVING_YARDS", "offensiveyards"),
+        (r"PLAYER_TO_RECORD_([0-9]+)\+_OFFENSIVE_YARDS", "offensiveyards"),
+        (r"PLAYER_TO_RECORD_([0-9]+)\+_SCRIMMAGE_YARDS", "offensiveyards"),
+        (r"PLAYER_TO_RECORD_([0-9]+)\+_RECEPTIONS", "receptions"),
+        (r"PLAYER_TO_SCORE_([0-9]+)\+_TOUCHDOWNS", "touchdowns"),
+        (r"PLAYER_TO_RECORD_([0-9]+)\+_TOUCHDOWNS", "touchdowns"),
+        (r"PLAYER_TO_RECORD_([0-9]+)\+_PASSING_TOUCHDOWNS", "passingtouchdowns"),
         (r"TO_SCORE_([0-9]+)\+_POINTS", "points"),
+        (r"TO_SCORE_([0-9]+)\+_TOUCHDOWNS", "touchdowns"),
         (r"TO_RECORD_([0-9]+)\+_ASSISTS", "assists"),
         (r"TO_RECORD_([0-9]+)\+_REBOUNDS", "rebounds"),
+        (r"TO_RECORD_([0-9]+)\+_PASSING_YARDS", "passingyards"),
+        (r"TO_RECORD_([0-9]+)\+_RUSHING_YARDS", "rushingyards"),
+        (r"TO_RECORD_([0-9]+)\+_RECEIVING_YARDS", "receivingyards"),
+        (r"TO_RECORD_([0-9]+)\+_RECEIVING_RUSHING_YARDS", "offensiveyards"),
+        (r"TO_RECORD_([0-9]+)\+_RUSHING_RECEIVING_YARDS", "offensiveyards"),
+        (r"TO_RECORD_([0-9]+)\+_OFFENSIVE_YARDS", "offensiveyards"),
+        (r"TO_RECORD_([0-9]+)\+_SCRIMMAGE_YARDS", "offensiveyards"),
+        (r"TO_RECORD_([0-9]+)\+_RECEPTIONS", "receptions"),
         (r"([0-9]+)\+_MADE_THREES", "madethrees"),
     )
     for pattern, stat_key in type_patterns:
@@ -786,12 +927,32 @@ def _single_side_player_market(market_name: str, market_type_name: str) -> tuple
             "hitsrunsrbis",
         ),
         (r"(?:^|\b)(?:60\s*min\s+)?player\s+to\s+record\s+([0-9]+)\+\s+shots?\s+on\s+goal\b", "shots"),
+        (r"(?:^|\b)player\s+to\s+record\s+([0-9]+)\+\s+passing\s+yards?\b", "passingyards"),
+        (
+            r"(?:^|\b)player\s+to\s+record\s+([0-9]+)\+\s+(?:receiving\s*\+\s*rushing|rushing\s*\+\s*receiving|rush(?:ing)?\s*\+\s*receiving|offensive|scrimmage|total)\s+yards?\b",
+            "offensiveyards",
+        ),
+        (r"(?:^|\b)player\s+to\s+record\s+([0-9]+)\+\s+rushing\s+yards?\b", "rushingyards"),
+        (r"(?:^|\b)player\s+to\s+record\s+([0-9]+)\+\s+receiving\s+yards?\b", "receivingyards"),
+        (r"(?:^|\b)player\s+to\s+record\s+([0-9]+)\+\s+receptions?\b", "receptions"),
+        (r"(?:^|\b)player\s+to\s+score\s+([0-9]+)\+\s+touchdowns?\b", "touchdowns"),
+        (r"(?:^|\b)player\s+to\s+record\s+([0-9]+)\+\s+touchdowns?\b", "touchdowns"),
+        (r"(?:^|\b)player\s+to\s+record\s+([0-9]+)\+\s+passing\s+touchdowns?\b", "passingtouchdowns"),
         (r"(?:^|\b)player\s+([0-9]+)\+\s+points?\b", "points"),
         (r"(?:^|\b)player\s+([0-9]+)\+\s+assists?\b", "assists"),
         (r"(?:^|\b)player\s+([0-9]+)\+\s+rebounds?\b", "rebounds"),
         (r"(?:^|\b)player\s+([0-9]+)\+\s+hits\s*\+\s*runs\s*\+\s*rbis?\b", "hitsrunsrbis"),
         (r"(?:^|\b)player\s+([0-9]+)\+\s+goals?\b", "goals"),
         (r"(?:^|\b)player\s+([0-9]+)\+\s+shots?\s+on\s+goal\b", "shots"),
+        (r"(?:^|\b)player\s+([0-9]+)\+\s+passing\s+yards?\b", "passingyards"),
+        (
+            r"(?:^|\b)player\s+([0-9]+)\+\s+(?:receiving\s*\+\s*rushing|rushing\s*\+\s*receiving|rush(?:ing)?\s*\+\s*receiving|offensive|scrimmage|total)\s+yards?\b",
+            "offensiveyards",
+        ),
+        (r"(?:^|\b)player\s+([0-9]+)\+\s+rushing\s+yards?\b", "rushingyards"),
+        (r"(?:^|\b)player\s+([0-9]+)\+\s+receiving\s+yards?\b", "receivingyards"),
+        (r"(?:^|\b)player\s+([0-9]+)\+\s+receptions?\b", "receptions"),
+        (r"(?:^|\b)player\s+([0-9]+)\+\s+touchdowns?\b", "touchdowns"),
         (r"(?:^|\b)([0-9]+)\+\s+made\s+threes?\b", "madethrees"),
         (r"(?:^|\b)([0-9]+)\+\s+threes?\b", "madethrees"),
     )
@@ -1122,6 +1283,44 @@ def _ufc_extra_outcomes_json(outcomes: list[dict[str, Any]]) -> str:
     return json.dumps(cleaned, separators=(",", ":"), ensure_ascii=True) if cleaned else ""
 
 
+def _event_allowed_for_sport(
+    sport: str,
+    event: dict[str, Any],
+    competition: dict[str, Any] | None = None,
+) -> bool:
+    sport_key = str(sport or "").strip().lower()
+    if sport_key == "ncaabb":
+        return str(event.get("competitionId") or "") == str(FANDUEL_NCAA_BASEBALL_COMPETITION_ID)
+
+    if sport_key not in {"nfl", "ncaaf"}:
+        return True
+
+    text_parts: list[str] = []
+    for source in (event, competition or {}):
+        if not isinstance(source, dict):
+            continue
+        for key in (
+            "name",
+            "competitionName",
+            "competitionDisplayName",
+            "eventTypeName",
+            "sportName",
+            "title",
+            "seoTitle",
+        ):
+            value = str(source.get(key) or "").strip()
+            if value:
+                text_parts.append(value)
+    text_key = normalize_text(" ".join(text_parts)).replace(" ", "")
+    if not text_key:
+        return True
+    has_nfl = "nfl" in text_key or "nationalfootballleague" in text_key
+    has_college = "collegefootball" in text_key or "ncaaf" in text_key or "ncaafootball" in text_key
+    if sport_key == "nfl":
+        return has_nfl or not has_college
+    return has_college or not has_nfl
+
+
 def _ufc_aggregate_method_outcomes(runner_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[str, list[int]] = {}
     for runner in runner_rows:
@@ -1142,6 +1341,7 @@ def _ufc_aggregate_method_outcomes(runner_rows: list[dict[str, Any]]) -> list[di
 
 def parse_payload(payload: dict[str, Any], sport: str) -> list[dict[str, Any]]:
     attachments = _payload_attachments(payload)
+    competitions = attachments.get("competitions") or {}
     events = attachments.get("events") or {}
     markets = attachments.get("markets") or attachments.get("sportsBookMarkets") or {}
     runners = attachments.get("runners") or {}
@@ -1152,10 +1352,11 @@ def parse_payload(payload: dict[str, Any], sport: str) -> list[dict[str, Any]]:
             continue
         event_id = str(market.get("eventId") or "")
         event = events.get(event_id, {})
-        if (
-            sport == "ncaabb"
-            and str(event.get("competitionId") or "") != str(FANDUEL_NCAA_BASEBALL_COMPETITION_ID)
-        ):
+        competition = {}
+        if isinstance(competitions, dict):
+            competition_id = event.get("competitionId")
+            competition = competitions.get(str(competition_id or "")) or competitions.get(competition_id) or {}
+        if not _event_allowed_for_sport(sport, event, competition):
             continue
         runner_ids = market.get("runnerIds") or market.get("runners") or []
         if runner_ids and all(isinstance(runner, dict) for runner in runner_ids):
@@ -1770,8 +1971,21 @@ def parse_payload(payload: dict[str, Any], sport: str) -> list[dict[str, Any]]:
             under_odds = _runner_odds(under)
             if over_odds is None or under_odds is None:
                 continue
-            if market_type == "player_over_under" and not player_name:
-                player_name = _player_name_from_market_or_runners(market_name, over, under)
+            if market_type == "player_over_under":
+                if not player_name:
+                    player_name = _player_name_from_market_or_runners(market_name, over, under)
+                stat_key = _player_stat_from_market_name(market_name, player_name)
+                if sport in {"nfl", "ncaaf"}:
+                    market_text = normalize_text(market_name)
+                    if (
+                        not home_team
+                        or not away_team
+                        or "regular season" in market_text
+                        or _looks_like_team_prop_player_name(player_name, home_team, away_team)
+                    ):
+                        continue
+            else:
+                stat_key = "total"
 
             line = _parse_line(over.get("handicap") or under.get("handicap") or market.get("handicap"))
             if line is None or line == 0.0:
@@ -1786,9 +2000,7 @@ def parse_payload(payload: dict[str, Any], sport: str) -> list[dict[str, Any]]:
                     "book": "fanduel",
                     "sport": sport,
                     "market_type": market_type,
-                    "stat": "total"
-                    if market_type == "game_total"
-                    else _player_stat_from_market_name(market_name, player_name),
+                    "stat": stat_key,
                     "player_name": player_name,
                     "line": line if line is not None else "",
                     "home_team": home_team,
@@ -2139,6 +2351,57 @@ def _saved_payload_missing_core_nba_player_props(payload: Any, sport: str) -> bo
     return not {"points", "rebounds", "assists", "madethrees"}.issubset(found_stats)
 
 
+def _saved_payload_missing_football_player_props(payload: Any, sport: str) -> bool:
+    if sport not in {"nfl", "ncaaf"} or not isinstance(payload, dict):
+        return False
+    attachments = _payload_attachments(payload)
+    events = attachments.get("events") or {}
+    markets = attachments.get("markets") or attachments.get("sportsBookMarkets") or {}
+    if not isinstance(events, dict):
+        return False
+    match_events = {
+        str(event.get("eventId") or ""): event
+        for event in events.values()
+        if isinstance(event, dict) and _is_match_event(event)
+    }
+    if not match_events:
+        return False
+    if not isinstance(markets, dict):
+        return True
+
+    for market in markets.values():
+        if not isinstance(market, dict):
+            continue
+        event = match_events.get(str(market.get("eventId") or ""))
+        if not isinstance(event, dict):
+            continue
+        home_team, away_team = _event_teams(event)
+        market_name = str(market.get("marketName") or market.get("name") or "").strip()
+        market_type = str(market.get("marketType") or market.get("marketTypeName") or "").strip()
+        player_name = str(market.get("playerName") or market.get("marketTitle") or "").strip()
+        stat_line = _single_side_player_market(market_name, market_type)
+        stat_key = stat_line[0] if stat_line else ""
+        runner_rows = _inline_runner_rows(market)
+        if not player_name and stat_key and runner_rows:
+            player_name = _runner_label(runner_rows[0])
+        if not stat_key and len(runner_rows) == 2:
+            over_runner, under_runner = _find_over_under_runners(runner_rows)
+            if over_runner is not None and under_runner is not None:
+                player_name = player_name or _player_name_from_market_or_runners(
+                    market_name,
+                    over_runner,
+                    under_runner,
+                )
+                stat_key = _player_stat_from_market_name(market_name, player_name)
+        if (
+            stat_key in FOOTBALL_PLAYER_PROP_STATS
+            and player_name
+            and not _looks_like_team_prop_player_name(player_name, home_team, away_team)
+        ):
+            return False
+    return True
+
+
 def _saved_payload_missing_nba_quarter_game_lines(payload: Any, sport: str) -> bool:
     if sport not in {"nba", "wnba"} or not isinstance(payload, dict):
         return False
@@ -2451,7 +2714,7 @@ def _enrich_payload_with_event_tabs(
         except Exception:
             continue
         tab_ids = _extract_tab_ids(tabs_payload, tab_keywords)
-        if not tab_ids and event.get("inPlay") is True:
+        if not tab_ids and (event.get("inPlay") is True or sport in {"nfl", "ncaaf"}):
             tab_ids = _extract_tab_ids(tabs_payload, ("__all__",))
         for tab_id in tab_ids:
             try:
@@ -2789,6 +3052,8 @@ def fetch_rows(
         if market_scope == "all" and _saved_payload_needs_price_refresh(payload, sport):
             payload = None
         if market_scope == "all" and _saved_payload_missing_core_nba_player_props(payload, sport):
+            payload = None
+        if market_scope == "all" and _saved_payload_missing_football_player_props(payload, sport):
             payload = None
         if _saved_payload_missing_nba_quarter_game_lines(payload, sport):
             payload = None

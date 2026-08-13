@@ -22,11 +22,15 @@ SPORT_TO_EVENTGROUP = {
     "wnba": 94682,
     "nhl": 42133,
     "nfl": 88808,
+    "ncaaf": 87637,
     "ufc": 9034,
 }
 
 SPORT_ALIASES = {
     "cws": "ncaabb",
+    "cfb": "ncaaf",
+    "college-football": "ncaaf",
+    "collegefootball": "ncaaf",
 }
 
 GOLF_LEAGUE_IDS = {
@@ -289,6 +293,14 @@ STAT_ALIASES = {
     "playerblocksou": "blocks",
     "goalkeepersaves": "saves",
     "goaltendersavesou": "saves",
+    "receivingrushingyards": "offensiveyards",
+    "receivingrushingyardsou": "offensiveyards",
+    "rushingreceivingyards": "offensiveyards",
+    "rushingreceivingyardsou": "offensiveyards",
+    "offensiveyards": "offensiveyards",
+    "offensiveyardsou": "offensiveyards",
+    "scrimmageyards": "offensiveyards",
+    "scrimmageyardsou": "offensiveyards",
     "playerpowerplaypointsou": "powerplaypoints",
     "stolenbases": "stolenbases",
     "strikeoutsthrown": "strikeouts",
@@ -340,6 +352,56 @@ STAT_ALIASES = {
     "totaltakedowns": "takedowns",
     "totaltakedownslanded": "takedowns",
     "knockdowns": "knockdowns",
+    "passingyards": "passingyards",
+    "passingyardsou": "passingyards",
+    "playerpassingyards": "passingyards",
+    "playerpassingyardsou": "passingyards",
+    "passyards": "passingyards",
+    "passyardsou": "passingyards",
+    "rushingyards": "rushingyards",
+    "rushingyardsou": "rushingyards",
+    "playerrushingyards": "rushingyards",
+    "playerrushingyardsou": "rushingyards",
+    "rushyards": "rushingyards",
+    "rushyardsou": "rushingyards",
+    "receivingyards": "receivingyards",
+    "receivingyardsou": "receivingyards",
+    "playerreceivingyards": "receivingyards",
+    "playerreceivingyardsou": "receivingyards",
+    "receptions": "receptions",
+    "receptionsou": "receptions",
+    "playerreceptions": "receptions",
+    "playerreceptionsou": "receptions",
+    "passingtds": "passingtouchdowns",
+    "passingtdsou": "passingtouchdowns",
+    "passingtouchdowns": "passingtouchdowns",
+    "passingtouchdownsou": "passingtouchdowns",
+    "playerpassingtouchdownsou": "passingtouchdowns",
+    "touchdowns": "touchdowns",
+    "touchdownsou": "touchdowns",
+    "anytimetouchdownscorer": "touchdowns",
+    "anytimetdscorer": "touchdowns",
+    "tdscorer": "touchdowns",
+    "completions": "completions",
+    "completionsou": "completions",
+    "passingcompletions": "completions",
+    "passingcompletionsou": "completions",
+    "passingattempts": "passingattempts",
+    "passingattemptsou": "passingattempts",
+    "passattempts": "passingattempts",
+    "passattemptsou": "passingattempts",
+    "interceptions": "interceptions",
+    "interceptionsou": "interceptions",
+    "passinginterceptions": "interceptions",
+    "passinginterceptionsou": "interceptions",
+    "sacks": "sacks",
+    "sacksou": "sacks",
+    "longestreception": "longestreception",
+    "longestreceptionou": "longestreception",
+    "longestrush": "longestrush",
+    "longestrushou": "longestrush",
+    "longestcompletion": "longestcompletion",
+    "longestcompletionou": "longestcompletion",
 }
 
 
@@ -455,6 +517,52 @@ def _normalize_stat(value: str) -> str:
     raw = str(value or "").strip().lower()
     key = "".join(ch for ch in raw if ch.isalnum())
     return STAT_ALIASES.get(key, key)
+
+
+STAT_CANONICALS = set(STAT_ALIASES.values())
+
+
+def _looks_like_stat_label(value: str) -> bool:
+    return _normalize_stat(value) in STAT_CANONICALS
+
+
+def _legacy_outcome_player_name(outcome: dict[str, Any]) -> str:
+    for key in ("participant", "participantName", "playerName", "competitorName", "entityName"):
+        value = outcome.get(key)
+        if isinstance(value, dict):
+            name = str(value.get("name") or value.get("displayName") or value.get("label") or "").strip()
+            if name:
+                return name
+        elif isinstance(value, str):
+            name = value.strip()
+            if name and name.lower() not in {"over", "under", "yes", "no"}:
+                return name
+    for participant in outcome.get("participants") or []:
+        if isinstance(participant, dict):
+            participant_type = str(participant.get("type") or "").strip().lower()
+            if participant_type and participant_type != "team":
+                name = str(participant.get("name") or participant.get("displayName") or "").strip()
+                if name:
+                    return name
+    return ""
+
+
+def _legacy_offer_player_name(
+    outcomes: list[dict[str, Any]],
+    offer_label: str,
+    subcategory_name: str,
+) -> str:
+    outcome_names = {
+        name
+        for outcome in outcomes
+        for name in [_legacy_outcome_player_name(outcome)]
+        if name
+    }
+    if len(outcome_names) == 1:
+        return next(iter(outcome_names))
+    if offer_label and not _looks_like_stat_label(offer_label):
+        return offer_label
+    return ""
 
 
 def _market_family(subcategory_name: str, outcomes: list[dict[str, Any]], offer_label: str) -> str | None:
@@ -2099,6 +2207,22 @@ def parse_payload(
                     under_odds = _parse_american(under.get("oddsAmerican"))
                     if over_odds is None or under_odds is None:
                         continue
+                    player_name = ""
+                    stat = _normalize_stat(subcategory_name)
+                    if market_type == "player_over_under":
+                        player_name = _legacy_offer_player_name(outcomes, offer_label, subcategory_name)
+                        if not player_name:
+                            continue
+                        stat_source = subcategory_name
+                        normalized_stat_source = _normalize_stat(stat_source)
+                        if (
+                            (not stat_source or normalized_stat_source not in STAT_CANONICALS)
+                            and _looks_like_stat_label(offer_label)
+                        ):
+                            stat_source = offer_label
+                        elif offer_label and player_name and offer_label.lower().startswith(player_name.lower()):
+                            stat_source = offer_label[len(player_name):].strip(" -")
+                        stat = _normalize_stat(stat_source)
                     rows.append(
                         {
                             "provider": "draftkings",
@@ -2109,8 +2233,8 @@ def parse_payload(
                             "book": "draftkings",
                             "sport": sport,
                             "market_type": market_type,
-                            "stat": _normalize_stat(subcategory_name),
-                            "player_name": offer_label if market_type == "player_over_under" else "",
+                            "stat": stat,
+                            "player_name": player_name,
                             "line": line if line is not None else "",
                             "home_team": home_team,
                             "away_team": away_team,
@@ -2669,6 +2793,7 @@ def fetch_rows(
                 or "chrome136"
             ).strip()
             use_live_nash = not (sport_config.get("urls") or headers)
+            live_nash_error: Exception | None = None
             if use_live_nash:
                 try:
                     rows, raw = _fetch_live_nash_sport_payloads(
@@ -2684,13 +2809,12 @@ def fetch_rows(
                         save_payload("draftkings", sport, raw)
                     continue
                 except Exception as exc:
-                    raw_payloads[sport] = {"error": str(exc)}
-                    continue
+                    live_nash_error = exc
 
             urls = list(sport_config.get("urls") or [])
             if not urls:
                 urls.extend(_default_urls(sport))
-            last_error = None
+            last_error = live_nash_error
             for url in urls:
                 try:
                     payload = get_browser_like_json(

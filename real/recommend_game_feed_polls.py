@@ -101,6 +101,9 @@ REAL_APP_HOME_COHORT_BY_SPORT = {
 }
 SPORT_ALIASES = {
     "cws": "ncaabb",
+    "cfb": "ncaaf",
+    "college-football": "ncaaf",
+    "collegefootball": "ncaaf",
 }
 TOURNAMENT_PLAYER_SEARCH_QUERIES = [""] + list("abcdefghijklmnopqrstuvwxyz")
 _TOURNAMENT_SEARCH_CACHE: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
@@ -5242,6 +5245,48 @@ def _normalize_pick_stat(value: Any) -> str:
         "3pm": "madethrees",
         "madethrees": "madethrees",
         "threes": "madethrees",
+        "passingyard": "passingyards",
+        "passingyards": "passingyards",
+        "passyard": "passingyards",
+        "passyards": "passingyards",
+        "passingtd": "passingtouchdowns",
+        "passingtds": "passingtouchdowns",
+        "passingtouchdown": "passingtouchdowns",
+        "passingtouchdowns": "passingtouchdowns",
+        "rushingyard": "rushingyards",
+        "rushingyards": "rushingyards",
+        "rushyard": "rushingyards",
+        "rushyards": "rushingyards",
+        "receivingyard": "receivingyards",
+        "receivingyards": "receivingyards",
+        "receivingrushingyard": "offensiveyards",
+        "receivingrushingyards": "offensiveyards",
+        "rushingreceivingyard": "offensiveyards",
+        "rushingreceivingyards": "offensiveyards",
+        "offensiveyard": "offensiveyards",
+        "offensiveyards": "offensiveyards",
+        "scrimmageyard": "offensiveyards",
+        "scrimmageyards": "offensiveyards",
+        "reception": "receptions",
+        "receptions": "receptions",
+        "touchdown": "touchdowns",
+        "touchdowns": "touchdowns",
+        "td": "touchdowns",
+        "tds": "touchdowns",
+        "completion": "completions",
+        "completions": "completions",
+        "passingcompletion": "completions",
+        "passingcompletions": "completions",
+        "passingattempt": "passingattempts",
+        "passingattempts": "passingattempts",
+        "passattempt": "passingattempts",
+        "passattempts": "passingattempts",
+        "interception": "interceptions",
+        "interceptions": "interceptions",
+        "passinginterception": "interceptions",
+        "passinginterceptions": "interceptions",
+        "sack": "sacks",
+        "sacks": "sacks",
     }
     normalized = aliases.get(key)
     if normalized:
@@ -5281,6 +5326,9 @@ def _resolve_zero_cost_stat_key(entry: dict[str, Any], poll_kind: str) -> str:
         text_stat_key = _baseball_anytime_stat_from_text(combined_text)
         if text_stat_key:
             return text_stat_key
+    if sport in {"ncaaf", "nfl"} and poll_kind == "anytime_play":
+        if "touchdown" in combined_text or re.search(r"\btds?\b", combined_text):
+            return "touchdowns"
 
     params = additional.get("params") or {}
     try:
@@ -5299,6 +5347,36 @@ def _resolve_zero_cost_stat_key(entry: dict[str, Any], poll_kind: str) -> str:
 
     if "shot on goal" in combined_text or "shots on goal" in combined_text or " shot " in f" {combined_text} ":
         return "shots"
+    if "passing yard" in combined_text or "pass yard" in combined_text:
+        return "passingyards"
+    if "passing touchdown" in combined_text or re.search(r"\bpass(?:ing)?\s+tds?\b", combined_text):
+        return "passingtouchdowns"
+    if sport in {"ncaaf", "nfl"} and (
+        "rushing + receiving yard" in combined_text
+        or "receiving + rushing yard" in combined_text
+        or "rush + receiving yard" in combined_text
+        or "receiving + rush yard" in combined_text
+        or "offensive yard" in combined_text
+        or "scrimmage yard" in combined_text
+        or "total yard" in combined_text
+    ):
+        return "offensiveyards"
+    if "rushing yard" in combined_text or "rush yard" in combined_text:
+        return "rushingyards"
+    if "receiving yard" in combined_text:
+        return "receivingyards"
+    if "reception" in combined_text:
+        return "receptions"
+    if "touchdown" in combined_text or re.search(r"\btds?\b", combined_text):
+        return "touchdowns"
+    if "completion" in combined_text:
+        return "completions"
+    if "passing attempt" in combined_text or "pass attempt" in combined_text:
+        return "passingattempts"
+    if "interception" in combined_text:
+        return "interceptions"
+    if "sack" in combined_text:
+        return "sacks"
     if "assist" in combined_text:
         return "assists"
     if "chance" in combined_text or "key pass" in combined_text or "key passes" in combined_text:

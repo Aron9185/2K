@@ -33,16 +33,23 @@ LIVE_POLL_RECOMMENDATIONS_CSV = BASE_DIR / "live_poll_vote_recommendations.csv"
 PREDICTION_SPORTS = {"mlb", "nba", "nhl", "soccer"}
 LINEUP_CONTEXT_SPORTS = {"golf", "mlb", "nba", "ncaabb", "ncaaf", "ncaam", "nfl", "nhl", "soccer", "wnba"}
 PREDICTION_SPORT_ORDER = ("mlb", "nba", "nhl", "soccer")
-DEFAULT_REFRESH_SPORTS = ("mlb", "ncaabb", "nba", "nhl", "wnba", "golf", "ufc")
-DEFAULT_LIVE_POLL_SPORTS = ("mlb", "ncaabb", "nba", "nhl", "wnba", "soccer", "golf", "ufc")
+DEFAULT_REFRESH_SPORTS = ("mlb", "ncaabb", "nfl", "ncaaf", "nba", "nhl", "wnba", "golf", "ufc")
+DEFAULT_LIVE_POLL_SPORTS = ("mlb", "ncaabb", "nfl", "ncaaf", "nba", "nhl", "wnba", "soccer", "golf", "ufc")
 SPORT_ALIASES = {
     "cws": "ncaabb",
+    "cfb": "ncaaf",
+    "college-football": "ncaaf",
+    "collegefootball": "ncaaf",
 }
 SPORT_LABELS = {
     "ncaabb": "CWS",
+    "ncaaf": "CFB",
+    "nfl": "NFL",
 }
 SPORT_LINEUP_SEASONS = {
     "ncaabb": "2026",
+    "ncaaf": "2026",
+    "nfl": "2026",
 }
 
 
@@ -56,7 +63,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sports",
         default=",".join(DEFAULT_REFRESH_SPORTS),
-        help="Comma-separated sports to refresh, for example mlb,cws,nba,nhl,wnba,golf,ufc.",
+        help="Comma-separated sports to refresh, for example mlb,cws,nfl,cfb,nba,nhl,wnba,golf,ufc.",
     )
     parser.add_argument(
         "--refresh-soccer",

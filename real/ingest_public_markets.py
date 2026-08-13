@@ -39,8 +39,8 @@ def parse_args():
     )
     parser.add_argument(
         "--sports",
-        default="nba,mlb,nhl,nfl,wnba",
-        help="Comma-separated sports to pull, e.g. nba,mlb,nhl,ufc.",
+        default="nba,mlb,nhl,nfl,ncaaf,wnba",
+        help="Comma-separated sports to pull, e.g. nba,mlb,nfl,cfb,nhl,ufc.",
     )
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT))
     parser.add_argument("--append", action="store_true")
@@ -102,6 +102,9 @@ def _parse_csv_arg(value: str) -> list[str]:
 
 SPORT_ALIASES = {
     "cws": "ncaabb",
+    "cfb": "ncaaf",
+    "college-football": "ncaaf",
+    "collegefootball": "ncaaf",
 }
 
 

@@ -16,6 +16,9 @@ DEFAULT_LIVEFEED_PAGES = 5
 EVEN_MONEY_ODDS = 100
 SPORT_ALIASES = {
     "cws": "ncaabb",
+    "cfb": "ncaaf",
+    "college-football": "ncaaf",
+    "collegefootball": "ncaaf",
 }
 PLAYER_NAME_WITH_LINE_RE = re.compile(
     r"^(?P<name>.+?)\s*(?:·|‧|•|-|–|—)\s*\d+(?:\.\d+)?\s+\S",
